@@ -1,0 +1,84 @@
+# xacro-pure: a faithful pure-Rust port of canonical ROS xacro.
+#
+# Expands both declarative and programmatic xacro classes byte-identically to
+# /opt/ros/*/bin/xacro, on every target including wasm, with no subprocess, no
+# Python installation, and no ROS at runtime. The pieces, each a faithful port
+# of its canonical counterpart:
+#   * safe_eval: canonical xacro's expression evaluator, backed by rustpython-vm
+#     (a CPython-grade interpreter in pure Rust) so ${...} gets full Python
+#     eval() parity.
+#   * the property model: Table/NameSpace scopes, lazy/eager, circular detection.
+#   * the full eval_text lexer: ${...} / $(...) substitution args / $$.
+#   * macros + includes: params/defaults/^-forwarding/blocks, ns=/optional=/glob
+#     includes through an injected reader (wasm-clean).
+#   * load_yaml: unit constructors + dotted access via the canonical wrappers.
+#   * the canonical serializer: a fixed_writexml port, byte-comparable output.
+
+[package]
+name = "xacro-pure"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Pure-Rust xacro processor: expand ROS xacro to URDF with no ROS or Python installation"
+repository = "https://github.com/CogniPilot/xacro-pure"
+readme = "README.md"
+keywords = ["xacro", "ros", "urdf", "robotics", "wasm"]
+categories = ["science::robotics", "parser-implementations"]
+
+[dependencies]
+# CPython-grade Python interpreter, PURE RUST and wasm-clean. Pinned EXACTLY (the
+# `=` makes Cargo refuse any other version) because rustpython is pre-1.0 (0.4):
+# the embedding API and the getrandom transitive plumbing are not yet stable.
+# default-features = false + "compiler" = embed the compiler but NOT the stdlib
+# (no_stdlib): we only need eval-mode expression compilation, not a Python runtime.
+rustpython-vm = { version = "=0.4.0", default-features = false, features = ["compiler"] }
+# Insertion-order-preserving map for XacroValue::Dict so a Python dict round-trips
+# with stable key order (deterministic conversion + deterministic str()).
+indexmap = "2"
+# Arbitrary-precision integer for XacroValue::Int. CPython's `int` is unbounded,
+# so canonical xacro evaluates `2**63` / `10**30` / `2**100` to exact integers;
+# representing them as i64 would overflow. num-bigint is the standard, stable
+# Rust bigint and is the PUBLIC int type in XacroValue (decoupled from
+# rustpython's internal bigint choice).
+num-bigint = "0.4"
+# num-traits for ToPrimitive (BigInt -> f64 in XacroValue::as_f64).
+num-traits = "0.2"
+# Unicode identifier rules (XID_Start / XID_Continue) so is_valid_name accepts the
+# SAME identifiers Python's `ast.parse` does, including non-ASCII names like
+# `café`, `über`, `λ` (verified valid via the live oracle). Restricting to ASCII
+# would FATAL-reject a file that canonical xacro accepts. `unicode-ident` is the
+# crate `syn`/`proc-macro2` use for exactly this; already in the dep graph
+# transitively, now a direct dep. wasm-clean (no_std, zero deps).
+unicode-ident = "1"
+# rustpython 0.4's PyInt payload is a malachite_bigint::BigInt. Pinned EXACTLY to
+# the version rustpython-vm 0.4.0 resolves (matching the rustpython exact-pin
+# posture) so the type unifies with `ctx.new_int`; used only to bridge an
+# injected big-int property INTO the eval scope (num-bigint <-> malachite-bigint
+# via their shared lossless decimal form).
+malachite-bigint = "=0.2.3"
+# The MUTABLE XML DOM for the document-processing pipeline. `xmltree` is the
+# same pure-Rust tree `xacro-rs`/`xurdf` use: an `Element` with children/attrs/
+# text/comment nodes that we read, mutate (eval text+attrs, drop xacro:* nodes,
+# keep/drop xacro:if subtrees), and serialize. It surfaces namespace prefixes
+# (so a `xacro:property` element is `name="property" prefix=Some("xacro")`) and
+# the namespace-decl map (so `xmlns:xacro` can be stripped from output). wasm-
+# clean: its only dep is `xml-rs` (pure-Rust, zero further deps; `attribute-order`
+# adds `indexmap`, already in the graph). The faithful pretty-printer
+# (fixed_writexml) handles final output; xmltree's basic serialize backs the DOM. `attribute-order`
+# backs the attribute map with an insertion-ordered IndexMap so serialized output
+# is DETERMINISTIC (the default HashMap would randomize attribute order).
+xmltree = { version = "0.11", features = ["attribute-order"] }
+# Pure-Rust YAML parser for the `xacro.load_yaml` builtin. The high-level
+# `Yaml` enum DROPS custom tags, so we drive the lower-level event `Parser`
+# directly to intercept the `!radians`/`!degrees`/... unit constructors (each
+# safe_evals its scalar and scales it) for full canonical fidelity. wasm-clean
+# (verified: builds for wasm32-unknown-unknown; deps are arraydeque/encoding_rs/
+# hashlink, all pure-Rust).
+yaml-rust2 = "0.10"
+
+# wasm32 has no OS RNG; rustpython pulls getrandom transitively. The 0.3.x line
+# needs an explicit backend selected on wasm32-unknown-unknown: wire the
+# browser/JS backend so the wasm build links. (Native targets use the OS backend
+# automatically and need no extra config.)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3", features = ["wasm_js"] }
