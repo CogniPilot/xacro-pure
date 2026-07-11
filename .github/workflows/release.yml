@@ -1,0 +1,57 @@
+name: Release (crates.io)
+
+# On a version tag (e.g. v0.1.0) this publishes the crate to crates.io via Trusted
+# Publishing (OIDC), so no API token is stored. Configure the trusted publisher first
+# in the crate's settings on crates.io:
+#   crate xacro-pure, owner CogniPilot, repo xacro-pure, workflow release.yml, env crates-io
+# crates.io versions are immutable; bump Cargo.toml per release and tag to match.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish-crate:
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      id-token: write          # required for crates.io Trusted Publishing
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Gate on the test suite
+        run: cargo test
+
+      - name: Gate the tag against the manifest version
+        run: |
+          VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VER" != "$TAG" ]; then
+            echo "tag v$TAG does not match Cargo.toml version $VER" >&2
+            exit 1
+          fi
+
+      - name: Skip if this version is already published
+        id: check
+        run: |
+          VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A "xacro-pure-release (bperseghetti@rudislabs.com)" \
+            "https://crates.io/api/v1/crates/xacro-pure/$VER")
+          if [ "$CODE" = "200" ]; then
+            echo "xacro-pure $VER already on crates.io, skipping publish"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate with crates.io (Trusted Publishing)
+        if: steps.check.outputs.publish == 'true'
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish xacro-pure to crates.io
+        if: steps.check.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish
