@@ -65,6 +65,49 @@ use crate::value::XacroValue;
 const XACRO_PREFIX: &str = "xacro";
 const XACRO_NS_URI: &str = "http://www.ros.org/wiki/xacro";
 
+/// The default cap on nested expansion depth: how many macro expansions plus
+/// included documents may be open at once before the pipeline returns an error
+/// instead of recursing further. Canonical xacro relies on Python's own
+/// `RecursionError` (an effective macro-nesting depth in the low hundreds under
+/// the default 1000-frame limit); this port recurses on the native/wasm call
+/// stack, where unbounded recursion is an uncatchable process abort, so it needs
+/// its own catchable cap.
+///
+/// The value is sized from a measured stack budget, not a round number. Each
+/// nested expansion level costs a roughly constant slice of stack (the
+/// `eval_all` -> macro-call -> `eval_all` chain; the per-level `${...}`
+/// evaluations run and unwind within the level, so the depth reached before a
+/// stack overflow is independent of how many expressions a macro evaluates). A
+/// self-recursive macro measured against varied stack sizes overflows at about
+/// 55 levels per MiB in an unoptimized (debug) build and about 230 levels per
+/// MiB optimized (release). The smallest realistic target is a browser wasm
+/// build, whose linker stack defaults to 1 MiB, so an optimized wasm build (how
+/// browsers ship) overflows near 230 levels and an unoptimized native thread
+/// stack of 2 MiB near 140.
+///
+/// 128 sits below both of those with margin, yet is far above any legitimate
+/// document (real robots nest tens of levels, never hundreds; the deeply
+/// recursive OpenArm corpus imports in-browser today, so it fits well inside the
+/// 1 MiB wasm stack). A genuine document always expands; only runaway recursion
+/// is stopped.
+///
+/// Override at runtime on native targets with the `XACRO_MAX_EXPANSION_DEPTH`
+/// environment variable (a positive integer); wasm has no environment, so the
+/// default governs there.
+pub const DEFAULT_MAX_EXPANSION_DEPTH: usize = 128;
+
+/// The configured expansion-depth cap: the `XACRO_MAX_EXPANSION_DEPTH`
+/// environment variable if it parses to a positive integer, else
+/// [`DEFAULT_MAX_EXPANSION_DEPTH`]. Reading the environment is a no-op on wasm
+/// (no environment), so the default governs there.
+fn configured_max_expansion_depth() -> usize {
+    std::env::var("XACRO_MAX_EXPANSION_DEPTH")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_EXPANSION_DEPTH)
+}
+
 /// An error from processing a xacro document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcessError {
@@ -126,6 +169,31 @@ struct Ctx<'r> {
     /// chain, so block lookup (which keys on [`ScopeId`]) walks THIS mirror of the
     /// parent links we established when pushing those scopes.
     scope_parents: HashMap<ScopeId, Option<ScopeId>>,
+    /// The current nested-expansion depth (open macro bodies plus included
+    /// documents). Guards against unbounded recursion that would otherwise
+    /// overflow the call stack: a native process abort, or a killed wasm module.
+    expand_depth: usize,
+    /// The cap on [`Ctx::expand_depth`]; see [`configured_max_expansion_depth`].
+    max_expand_depth: usize,
+}
+
+impl Ctx<'_> {
+    /// Enter one expansion level (a macro body or an included document), erroring
+    /// if the nesting would exceed [`Ctx::max_expand_depth`]. The caller pairs
+    /// this with [`Ctx::exit_expansion`] after the nested `eval_all` returns.
+    fn enter_expansion(&mut self) -> Result<(), ProcessError> {
+        self.expand_depth += 1;
+        if self.expand_depth > self.max_expand_depth {
+            self.expand_depth -= 1;
+            return Err(depth_exceeded(self.max_expand_depth));
+        }
+        Ok(())
+    }
+
+    /// Leave one expansion level (see [`Ctx::enter_expansion`]).
+    fn exit_expansion(&mut self) {
+        self.expand_depth = self.expand_depth.saturating_sub(1);
+    }
 }
 
 /// The lockstep pair of scopes threaded through expansion: the PROPERTY scope and
@@ -235,6 +303,8 @@ where
         reader,
         filestack: vec![current_file.map(str::to_owned)],
         scope_parents: HashMap::new(),
+        expand_depth: 0,
+        max_expand_depth: configured_max_expansion_depth(),
     };
 
     let scopes = Scopes {
@@ -639,7 +709,16 @@ fn handle_macro_call(
         mac: body_mac,
     };
     let mut body = m.body.clone();
-    eval_all(&mut body, tables, body_scopes, ctx)?;
+    // Count this macro expansion against the depth cap so a self- or mutually-
+    // recursive macro returns an error rather than overflowing the call stack.
+    match ctx.enter_expansion() {
+        Ok(()) => {
+            let r = eval_all(&mut body, tables, body_scopes, ctx);
+            ctx.exit_expansion();
+            r
+        }
+        Err(e) => Err(e),
+    }?;
 
     remove_previous_comments(out);
     // Lift the expanded body root's `xmlns:*` declarations to the call's parent,
@@ -799,11 +878,16 @@ fn handle_include(
     }
 
     for filename in files {
-        // Cycle detection: a file already on the stack would recurse forever.
+        // Cycle detection compares LEXICALLY-NORMALIZED keys, so a file that
+        // includes itself through a byte-different path (`sub/../self.xacro`) is
+        // still caught instead of recursing to a stack overflow. `filename` itself
+        // stays byte-faithful for reading, `$(dirname)`, and nested resolution
+        // (canonical xacro does not normalize); only the comparison is normalized.
+        let norm = normalize_lexical(&filename);
         if ctx
             .filestack
             .iter()
-            .any(|f| f.as_deref() == Some(filename.as_str()))
+            .any(|f| f.as_deref().map(normalize_lexical).as_deref() == Some(norm.as_str()))
         {
             return Err(runtime(format!(
                 "circular xacro include detected: {filename}"
@@ -828,7 +912,16 @@ fn handle_include(
         ctx.filestack.push(Some(filename.clone()));
         let prev_filename = set_subst_filename(tables, Some(filename.clone()));
 
-        let result = eval_all(&mut included, tables, child_scopes, ctx);
+        // Count this include against the depth cap so a pathological include
+        // chain returns an error rather than overflowing the call stack.
+        let result = match ctx.enter_expansion() {
+            Ok(()) => {
+                let r = eval_all(&mut included, tables, child_scopes, ctx);
+                ctx.exit_expansion();
+                r
+            }
+            Err(e) => Err(e),
+        };
 
         set_subst_filename(tables, prev_filename);
         ctx.filestack.pop();
@@ -842,6 +935,53 @@ fn handle_include(
         out.extend(std::mem::take(&mut included.children));
     }
     Ok(())
+}
+
+/// Lexically normalize `path`: collapse `.` and cancel each `..` against a
+/// preceding normal component, WITHOUT touching the filesystem (no symlink
+/// resolution). Pure string arithmetic, so it stays wasm-safe. Used ONLY as an
+/// include-cycle comparison key: `sub/../self.xacro` and `self.xacro` normalize
+/// equal, so a self-include reached by a byte-different path is caught. Symlink
+/// aliases denote the same file without normalizing equal, so they stay uncaught
+/// here and fall through to the expansion-depth cap.
+fn normalize_lexical(path: &str) -> String {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for comp in std::path::Path::new(path).components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let last = out.components().next_back();
+                if matches!(last, Some(Component::Normal(_))) {
+                    // Cancel a preceding real component.
+                    out.pop();
+                } else if last.is_none() || matches!(last, Some(Component::ParentDir)) {
+                    // A leading `..` (or one after another `..`) has nothing to
+                    // cancel and is kept verbatim.
+                    out.push("..");
+                }
+                // Otherwise the preceding component is a root/prefix: `..` above
+                // the root is dropped (matching lexical `normpath`).
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    let s = out.to_string_lossy().into_owned();
+    if s.is_empty() {
+        ".".to_owned()
+    } else {
+        s
+    }
+}
+
+/// Build the expansion-depth-exceeded error: the catchable stand-in for the
+/// native stack overflow (a process abort) or the killed wasm module that
+/// unbounded macro recursion or include nesting would otherwise cause. Canonical
+/// xacro surfaces the analogous condition as Python's `RecursionError`.
+fn depth_exceeded(limit: usize) -> ProcessError {
+    runtime(format!(
+        "maximum xacro expansion depth ({limit}) exceeded; possible unbounded macro recursion or include nesting"
+    ))
 }
 
 /// Set the subst-context filename (for `$(dirname)`), returning the previous one
@@ -1013,4 +1153,22 @@ fn missing_attr(attr: &str, elt: &str) -> ProcessError {
 /// Build a runtime `ProcessError` from a message.
 fn runtime(msg: impl Into<String>) -> ProcessError {
     ProcessError::Eval(EvalError::Runtime(msg.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_lexical;
+
+    #[test]
+    fn normalize_lexical_cancels_dot_dot() {
+        // The load-bearing case: a byte-different path denoting the same file.
+        assert_eq!(normalize_lexical("sub/../self.xacro"), "self.xacro");
+        assert_eq!(normalize_lexical("./a/b.xacro"), "a/b.xacro");
+        assert_eq!(normalize_lexical("/a/b/../c.xacro"), "/a/c.xacro");
+        assert_eq!(normalize_lexical("a/./b/../b.xacro"), "a/b.xacro");
+        // A leading `..` has nothing to cancel and is kept.
+        assert_eq!(normalize_lexical("../a.xacro"), "../a.xacro");
+        // An empty result normalizes to the current directory.
+        assert_eq!(normalize_lexical("a/.."), ".");
+    }
 }

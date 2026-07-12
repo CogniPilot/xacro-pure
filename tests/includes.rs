@@ -310,3 +310,26 @@ fn macro_body_lifts_xmlns_to_parent() {
     assert!(out.contains(r#"k="v""#), "macro body element lost: {out}");
     assert_semantic_parity(src);
 }
+
+#[test]
+fn self_include_via_dotdot_is_cycle_error() {
+    // A file that includes itself through a byte-different but lexically
+    // equivalent path (`sub/../self.xacro`) must be caught as a cycle. Without
+    // lexical normalization of the comparison key, the raw strings never match
+    // and the include recurses until the stack overflows. The cycle is detected
+    // at the first self-reference, well before the depth cap, so this proves the
+    // lexical normalization, not the depth backstop.
+    let main = r#"<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="t">
+  <xacro:include filename="sub/../self.xacro"/>
+</robot>"#;
+    let selfdoc = r#"<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:include filename="sub/../self.xacro"/>
+</robot>"#;
+    let err = port_expand_result_with_files(main, &[("sub/../self.xacro", selfdoc)]).unwrap_err();
+    assert!(
+        format!("{err}").contains("circular"),
+        "expected a circular-include error, got: {err}"
+    );
+}

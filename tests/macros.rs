@@ -276,3 +276,76 @@ fn scope_parent_from_macro_body_reaches_caller() {
     assert!(out.contains(r#"<link name="LEAKED""#), "scope=parent failed: {out}");
     assert_semantic_parity(src);
 }
+
+/// Run `f` on a thread with a generous stack, so a recursion-limit test reaches
+/// the depth cap and returns cleanly regardless of the ambient test-thread stack.
+/// Without the cap, unbounded recursion would overflow and abort the whole test
+/// binary; `join` returning at all is itself part of what these tests assert.
+fn on_big_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(32 * 1024 * 1024)
+        .spawn(f)
+        .expect("spawn")
+        .join()
+        .expect("expansion returned instead of aborting the process")
+}
+
+#[test]
+fn self_recursive_macro_returns_depth_error() {
+    // A macro that calls itself with no base case must return the expansion-depth
+    // error rather than recursing until the stack overflows (a process abort).
+    let err = on_big_stack(|| {
+        let src = r#"<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="t">
+  <xacro:macro name="r" params="n"><link name="l${n}"/><xacro:r n="${n+1}"/></xacro:macro>
+  <xacro:r n="0"/>
+</robot>"#;
+        common::port_expand_result(src)
+    })
+    .expect_err("unbounded self-recursion must error");
+    assert!(
+        format!("{err}").contains("expansion depth"),
+        "expected a depth-limit error, got: {err}"
+    );
+}
+
+#[test]
+fn mutually_recursive_macros_return_depth_error() {
+    // Two macros that call each other with no base case must also return the
+    // depth error rather than overflowing the stack.
+    let err = on_big_stack(|| {
+        let src = r#"<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="t">
+  <xacro:macro name="ping" params="n"><p v="${n}"/><xacro:pong n="${n+1}"/></xacro:macro>
+  <xacro:macro name="pong" params="n"><q v="${n}"/><xacro:ping n="${n+1}"/></xacro:macro>
+  <xacro:ping n="0"/>
+</robot>"#;
+        common::port_expand_result(src)
+    })
+    .expect_err("unbounded mutual recursion must error");
+    assert!(
+        format!("{err}").contains("expansion depth"),
+        "expected a depth-limit error, got: {err}"
+    );
+}
+
+#[test]
+fn deep_but_legal_macro_nesting_expands() {
+    // A recursive macro WITH a base case, nesting 40 levels (well under the
+    // default cap), must expand normally and not trip the depth guard.
+    let src = r#"<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="t">
+  <xacro:macro name="chain" params="n">
+    <xacro:if value="${n > 0}">
+      <level d="${n}"/>
+      <xacro:chain n="${n-1}"/>
+    </xacro:if>
+  </xacro:macro>
+  <xacro:chain n="40"/>
+</robot>"#;
+    let out = port_expand(src);
+    assert!(out.contains(r#"<level d="40""#), "outermost level missing: {out}");
+    assert!(out.contains(r#"<level d="1""#), "innermost level missing: {out}");
+    assert!(!out.contains("expansion depth"), "legal nesting tripped the cap: {out}");
+    assert_semantic_parity(src);
+}

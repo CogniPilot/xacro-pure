@@ -68,7 +68,7 @@ mod xacro_builtins;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use dom::process_document;
-pub use dom::{process_document_with, ProcessError};
+pub use dom::{process_document_with, ProcessError, DEFAULT_MAX_EXPANSION_DEPTH};
 pub use includes::{FnIncludeReader, IncludeReader};
 #[cfg(not(target_arch = "wasm32"))]
 pub use includes::FsIncludeReader;
