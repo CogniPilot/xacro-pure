@@ -19,7 +19,8 @@
 //!     [`SubstContext::filename`]).
 //!   * `$(cwd)`:           the absolute current working / root directory.
 //!   * `$(eval EXPR)`,     ONLY when the WHOLE input is `$(eval ...)`: safe-eval
-//!     EXPR (with `arg`/`dirname`/`math.*` in scope) and `str()` the result.
+//!     EXPR (with `arg`/`dirname`/`env`/`optenv`/`find`/`math.*` in scope) and
+//!     `str()` the result.
 //!
 //! ## The `$(...)`-resolved-as-TEXT-before-`${...}` rule
 //! This module resolves `$(...)` to a plain string. In [`crate::eval_text`] a
@@ -129,11 +130,14 @@ impl PackageResolver for AmentPackageResolver {
 /// `args` table (`$(arg ...)`), the current `filename` (for `$(dirname)`), the
 /// `cwd`/root dir (for `$(cwd)`), and the injected [`PackageResolver`].
 ///
-/// The resolver is OWNED (a `Box<dyn PackageResolver>`) rather than borrowed so
+/// The resolver is OWNED (an `Rc<dyn PackageResolver>`) rather than borrowed so
 /// the context can live inside a `PropertyTables` (which property resolution
 /// threads through `eval_text`) without infecting that type with a lifetime;
 /// the OpenArm `${load_yaml(... $(arg x))}` pattern resolves `$(...)` during
 /// lazy property resolution, so the substitution state must be reachable there.
+/// It is an `Rc` (not a `Box`) so the `find(...)` callable inside `$(eval ...)`,
+/// which the embedded interpreter builds and may hold past this call, can share
+/// the same resolver by cloning the handle.
 pub struct SubstContext {
     /// The substitution-args table: `mappings` plus any declared `<xacro:arg>`
     /// defaults. Canonical stores this under `context['arg']`.
@@ -143,7 +147,7 @@ pub struct SubstContext {
     /// The root / current-working directory (for `$(cwd)`).
     pub cwd: String,
     /// The injected package resolver for `$(find ...)`.
-    pub resolver: Box<dyn PackageResolver>,
+    pub resolver: std::rc::Rc<dyn PackageResolver>,
 }
 
 impl SubstContext {
@@ -154,7 +158,7 @@ impl SubstContext {
             args: HashMap::new(),
             filename: None,
             cwd: ".".to_owned(),
-            resolver,
+            resolver: std::rc::Rc::from(resolver),
         }
     }
 }
@@ -348,16 +352,15 @@ fn abs_dirname(filename: &str) -> String {
 /// resolves to the bool `True`. The previous port evaluated against an EMPTY
 /// namespace with only `arg()`, so every bare name / math symbol raised.
 ///
-/// We rebuild that namespace for `safe_eval`: the args table injected as bare
-/// auto-typed PROPERTIES (so they resolve directly AND can be shadowed by a
-/// function of the same name, matching `_DictWrapper` checking functions first;
-/// here we inject functions, then properties LAST, so a same-named ARG would
-/// shadow a function, which is the opposite of `_DictWrapper`. In practice the
-/// arg-vs-function name collision is vanishingly rare and not exercised by any
-/// real xacro; the load-bearing behavior is that BOTH are reachable). `math.*` is
-/// supplied by `safe_eval` itself (it injects the math namespace). `True`/`False`
-/// are Python keyword constants; we add `true`/`false` as bare aliases, plus
-/// `arg`/`dirname` callables.
+/// We rebuild that namespace for `safe_eval`: the args table is injected as bare
+/// auto-typed PROPERTIES (so `$(eval count + 10)` resolves), and the `_eval_dict`
+/// callables (`arg`/`dirname`/`env`/`optenv`/`find`) as functions. Because
+/// `_DictWrapper` checks functions BEFORE args, a function must WIN a name
+/// collision with an arg: we drop any arg whose name matches a function name
+/// before injecting it as a property, so the function binding stands.
+/// `math.*` is supplied by `safe_eval` itself (it injects the math namespace).
+/// `True`/`False` are Python keyword constants; we add `true`/`false` as bare
+/// aliases.
 fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, SubstError> {
     if expr.contains("__") {
         return Err(SubstError::Subst(
@@ -365,9 +368,10 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
         ));
     }
 
-    // (a) functions: arg(name) + dirname() + true/false aliases. (env/optenv/find
-    // are part of canonical's _eval_dict; arg/dirname cover the patterns real
-    // xacros use inside $(eval). math.* is injected by safe_eval directly.)
+    // (a) functions: the canonical `_eval_dict` callables. `arg`/`dirname` cover
+    // the direct property/dirname access; `env`/`optenv`/`find` reuse the same
+    // resolution the `$(env)`/`$(optenv)`/`$(find)` commands use. `math.*` is
+    // injected by safe_eval directly.
     let args_snapshot = ctx.args.clone();
     let filename = ctx.filename.clone();
     let mut functions = Namespace::new();
@@ -387,21 +391,75 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
             .into()
         }
     });
-    functions.register_raw("dirname", move |vm| {
+    functions.register_raw("dirname", {
         let filename = filename.clone();
+        move |vm| {
+            let filename = filename.clone();
+            vm.new_function(
+                "dirname",
+                move |vm: &rustpython_vm::VirtualMachine| -> rustpython_vm::PyResult {
+                    match &filename {
+                        Some(f) => Ok(vm.ctx.new_str(abs_dirname(f)).into()),
+                        None => Err(vm.new_runtime_error(
+                            "Cannot substitute $(dirname), no file/directory information available."
+                                .to_owned(),
+                        )),
+                    }
+                },
+            )
+            .into()
+        }
+    });
+    // `env(name)`: the environment variable, erroring if unset (same as the
+    // `$(env)` command handler).
+    functions.register_raw("env", move |vm| {
         vm.new_function(
-            "dirname",
-            move |vm: &rustpython_vm::VirtualMachine| -> rustpython_vm::PyResult {
-                match &filename {
-                    Some(f) => Ok(vm.ctx.new_str(abs_dirname(f)).into()),
-                    None => Err(vm.new_runtime_error(
-                        "Cannot substitute $(dirname), no file/directory information available."
-                            .to_owned(),
-                    )),
+            "env",
+            move |name: String, vm: &rustpython_vm::VirtualMachine| -> rustpython_vm::PyResult {
+                std::env::var(&name)
+                    .map(|v| vm.ctx.new_str(v).into())
+                    .map_err(|_| {
+                        vm.new_runtime_error(format!("environment variable '{name}' is not set"))
+                    })
+            },
+        )
+        .into()
+    });
+    // `optenv(name, *default)`: the environment variable, or the space-joined
+    // default arguments if unset (same as the `$(optenv)` command handler).
+    functions.register_raw("optenv", move |vm| {
+        vm.new_function(
+            "optenv",
+            move |name: String,
+                  default: rustpython_vm::function::PosArgs<String>,
+                  vm: &rustpython_vm::VirtualMachine|
+                  -> rustpython_vm::PyResult {
+                match std::env::var(&name) {
+                    Ok(v) => Ok(vm.ctx.new_str(v).into()),
+                    Err(_) => Ok(vm.ctx.new_str(default.into_vec().join(" ")).into()),
                 }
             },
         )
         .into()
+    });
+    // `find(pkg)`: the package share directory via the injected resolver (same as
+    // the `$(find)` command handler). The `Rc` resolver is cloned into the
+    // callable so it can outlive this call inside the interpreter.
+    functions.register_raw("find", {
+        let resolver = ctx.resolver.clone();
+        move |vm| {
+            let resolver = resolver.clone();
+            vm.new_function(
+                "find",
+                move |pkg: String, vm: &rustpython_vm::VirtualMachine| -> rustpython_vm::PyResult {
+                    resolver
+                        .share_directory(&pkg)
+                        .map(|p| vm.ctx.new_str(p).into())
+                        .map_err(|e| vm.new_runtime_error(e))
+                },
+            )
+            .into()
+        }
     });
 
     // (b) properties: True/False/true/false as bare names, then EVERY arg as a
@@ -413,8 +471,9 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
     props.set("true", XacroValue::Bool(true));
     props.set("false", XacroValue::Bool(false));
     for (name, raw) in &args_snapshot {
-        // Skip the function names so the callables above are not clobbered.
-        if name == "arg" || name == "dirname" {
+        // A function of the same name must WIN (canonical checks functions first),
+        // so an arg colliding with a function name is NOT injected as a property.
+        if EVAL_FUNCTION_NAMES.contains(&name.as_str()) {
             continue;
         }
         props.set(name.clone(), convert_value_auto(raw));
@@ -425,6 +484,11 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
     // `_eval` returns `str(eval(...))`.
     Ok(value.to_python_str())
 }
+
+/// The `_eval_dict` callable names exposed inside `$(eval ...)`. An arg colliding
+/// with one of these is dropped from the property injection so the function wins
+/// the binding (canonical `_DictWrapper` checks functions before args).
+const EVAL_FUNCTION_NAMES: &[&str] = &["arg", "dirname", "env", "optenv", "find"];
 
 /// Canonical `convert_value(value, 'auto')`: numeric if it parses (float if it
 /// has a `.`, else int), bool for `true`/`false` (case-insensitive), else the
@@ -593,6 +657,62 @@ mod tests {
         assert_eq!(
             resolve_args("$(eval arg('n') + 10)", &mut ctx).unwrap(),
             "13"
+        );
+    }
+
+    #[test]
+    fn eval_env_reads_environment() {
+        let mut ctx = fake_ctx();
+        std::env::set_var("XACRO_PURE_X3_ENV", "hello");
+        assert_eq!(
+            resolve_args("$(eval env('XACRO_PURE_X3_ENV'))", &mut ctx).unwrap(),
+            "hello"
+        );
+        std::env::remove_var("XACRO_PURE_X3_ENV");
+    }
+
+    #[test]
+    fn eval_optenv_default_and_set() {
+        let mut ctx = fake_ctx();
+        // Unset variable -> the default argument.
+        assert_eq!(
+            resolve_args(
+                "$(eval optenv('XACRO_PURE_X3_UNSET_VAR', 'fallback'))",
+                &mut ctx
+            )
+            .unwrap(),
+            "fallback"
+        );
+        // Set variable -> its value.
+        std::env::set_var("XACRO_PURE_X3_OPT", "here");
+        assert_eq!(
+            resolve_args("$(eval optenv('XACRO_PURE_X3_OPT', 'fallback'))", &mut ctx).unwrap(),
+            "here"
+        );
+        std::env::remove_var("XACRO_PURE_X3_OPT");
+    }
+
+    #[test]
+    fn eval_find_uses_resolver() {
+        // `find(...)` inside $(eval) resolves through the injected resolver, the
+        // same one $(find ...) uses.
+        let mut ctx = fake_ctx();
+        assert_eq!(
+            resolve_args("$(eval find('my_pkg'))", &mut ctx).unwrap(),
+            "/share/my_pkg"
+        );
+    }
+
+    #[test]
+    fn eval_function_wins_arg_name_collision() {
+        // An arg named the same as a function must NOT shadow the function inside
+        // $(eval): canonical's _DictWrapper checks functions first. An arg `find`
+        // collides with the find() function; `find(...)` must call the function.
+        let mut ctx = fake_ctx();
+        ctx.args.insert("find".to_owned(), "SOME_ARG_VALUE".to_owned());
+        assert_eq!(
+            resolve_args("$(eval find('collision_pkg'))", &mut ctx).unwrap(),
+            "/share/collision_pkg"
         );
     }
 
