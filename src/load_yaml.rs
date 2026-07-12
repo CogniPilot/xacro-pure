@@ -197,7 +197,11 @@ fn scalar_to_value(
     tag: Option<&yaml_rust2::parser::Tag>,
 ) -> Result<XacroValue, EvalError> {
     if let Some(tag) = tag {
-        // Local `!suffix` unit tags.
+        // Local `!suffix` tags: the unit constructors scale their scalar; any
+        // other local tag is unrecognized. PyYAML's SafeLoader raises on an
+        // unknown tag rather than silently producing a string, and so do we: a
+        // typo like `!radian` is a mistake, not a string, and hiding it lets it
+        // resurface later as a confusing type error.
         if tag.handle == "!" {
             if let Some(&(_, factor)) = UNIT_CONSTRUCTORS.iter().find(|(s, _)| *s == tag.suffix) {
                 // safe_eval the scalar (canonical: `float(safe_eval(value, ...))`).
@@ -208,11 +212,18 @@ fn scalar_to_value(
                 })?;
                 return Ok(XacroValue::Float(n * factor));
             }
+            return Err(unknown_tag_error(&format!("!{}", tag.suffix)));
         }
-        // An unrecognized tag -> treat the scalar as a plain string (PyYAML's
-        // SafeLoader would error on an unknown tag, but for the property-model
-        // subset a permissive string is the safe, non-crashing choice).
-        return Ok(XacroValue::Str(text.to_owned()));
+        // Core-schema `!!` tags: yaml-rust2 expands the `!!` shorthand to the
+        // standard `tag:yaml.org,2002:` prefix. An explicit tag FORCES the type
+        // (`!!str 5` is the string "5", `!!int 5` is the integer 5) instead of the
+        // implicit resolution a plain scalar would get; matching PyYAML.
+        if tag.handle == "tag:yaml.org,2002:" {
+            return core_schema_scalar(&tag.suffix, text);
+        }
+        // Any other tag (a named `!handle!suffix`, a verbatim URI, ...) is
+        // unrecognized.
+        return Err(unknown_tag_error(&format!("{}{}", tag.handle, tag.suffix)));
     }
 
     // A quoted scalar is always a string (no type resolution).
@@ -224,6 +235,68 @@ fn scalar_to_value(
     }
 
     Ok(resolve_plain_scalar(text))
+}
+
+/// Build the "unknown tag" error, matching PyYAML's `ConstructorError` phrasing
+/// ("could not determine a constructor for the tag '...'").
+fn unknown_tag_error(tag: &str) -> EvalError {
+    EvalError::Runtime(format!("could not determine a constructor for the tag '{tag}'"))
+}
+
+/// Construct a scalar explicitly typed by a core-schema `!!` tag, matching
+/// PyYAML's SafeLoader constructors. The tag FORCES the type: `!!str 5` is the
+/// string "5", `!!int 5` is the integer 5. A value that cannot be constructed for
+/// the tag (`!!int abc`), or a core-schema tag outside the scalar set this subset
+/// supports (`!!seq`, `!!binary`, ...), errors rather than silently stringifying.
+fn core_schema_scalar(suffix: &str, text: &str) -> Result<XacroValue, EvalError> {
+    match suffix {
+        "str" => Ok(XacroValue::Str(text.to_owned())),
+        // PyYAML's `construct_yaml_null` yields None for any `!!null` scalar.
+        "null" => Ok(XacroValue::Null),
+        "bool" => parse_core_bool(text)
+            .map(XacroValue::Bool)
+            .ok_or_else(|| EvalError::Runtime(format!("!!bool value is not a boolean: {text}"))),
+        "int" => parse_core_int(text)
+            .map(XacroValue::Int)
+            .ok_or_else(|| EvalError::Runtime(format!("!!int value is not an integer: {text}"))),
+        "float" => parse_core_float(text)
+            .map(XacroValue::Float)
+            .ok_or_else(|| EvalError::Runtime(format!("!!float value is not a float: {text}"))),
+        other => Err(unknown_tag_error(&format!("tag:yaml.org,2002:{other}"))),
+    }
+}
+
+/// Parse a core-schema boolean (`!!bool`): the YAML 1.2 core-schema spellings.
+fn parse_core_bool(text: &str) -> Option<bool> {
+    match text {
+        "true" | "True" | "TRUE" => Some(true),
+        "false" | "False" | "FALSE" => Some(false),
+        _ => None,
+    }
+}
+
+/// Parse a core-schema integer (`!!int`): decimal or `0x` hexadecimal, arbitrary
+/// precision.
+fn parse_core_int(text: &str) -> Option<num_bigint::BigInt> {
+    if let Some(stripped) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        return num_bigint::BigInt::parse_bytes(stripped.as_bytes(), 16);
+    }
+    text.parse::<num_bigint::BigInt>().ok()
+}
+
+/// Parse a core-schema float (`!!float`). An EXPLICIT `!!float` tag is more
+/// permissive than the implicit plain-scalar resolver ([`is_pyyaml_float`], which
+/// requires a decimal point and a signed exponent): PyYAML's float constructor
+/// accepts an unsigned exponent and a point-less mantissa like `1e16`, so a plain
+/// Rust float parse (with the infinity/nan spellings handled first) matches it.
+fn parse_core_float(text: &str) -> Option<f64> {
+    match text {
+        ".inf" | ".Inf" | ".INF" | "+.inf" | "+.Inf" | "+.INF" => return Some(f64::INFINITY),
+        "-.inf" | "-.Inf" | "-.INF" => return Some(f64::NEG_INFINITY),
+        ".nan" | ".NaN" | ".NAN" => return Some(f64::NAN),
+        _ => {}
+    }
+    text.replace('_', "").parse::<f64>().ok()
 }
 
 /// YAML 1.1/1.2 core-schema resolution of a PLAIN scalar (what PyYAML's
@@ -374,6 +447,52 @@ mod tests {
             XacroValue::Float(f) => assert!((f - 12.0 * 0.0254).abs() < 1e-12),
             ref other => panic!("len not float: {other:?}"),
         }
+    }
+
+    #[test]
+    fn unknown_local_tag_errors() {
+        // A typo'd unit tag (unknown local `!` tag) errors instead of silently
+        // becoming a string, matching PyYAML's SafeLoader.
+        let err = load_yaml_str("x: !radian 5\n").unwrap_err();
+        assert!(
+            format!("{err}").contains("constructor for the tag"),
+            "expected an unknown-tag error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn core_schema_int_tag_is_int() {
+        // `!!int 5` forces an integer.
+        let v = load_yaml_str("x: !!int 5\n").unwrap();
+        let d = match v {
+            XacroValue::Dict(d) => d,
+            other => panic!("expected dict, got {other:?}"),
+        };
+        assert_eq!(d["x"], XacroValue::int(5));
+    }
+
+    #[test]
+    fn core_schema_str_tag_is_string() {
+        // `!!str 5` forces the string "5" (no numeric resolution).
+        let v = load_yaml_str("x: !!str 5\n").unwrap();
+        let d = match v {
+            XacroValue::Dict(d) => d,
+            other => panic!("expected dict, got {other:?}"),
+        };
+        assert_eq!(d["x"], XacroValue::Str("5".to_owned()));
+    }
+
+    #[test]
+    fn core_schema_float_bool_null_tags() {
+        // The remaining core-schema `!!` scalar tags construct correctly.
+        let v = load_yaml_str("f: !!float 5\nb: !!bool true\nn: !!null ~\n").unwrap();
+        let d = match v {
+            XacroValue::Dict(d) => d,
+            other => panic!("expected dict, got {other:?}"),
+        };
+        assert_eq!(d["f"], XacroValue::Float(5.0));
+        assert_eq!(d["b"], XacroValue::Bool(true));
+        assert_eq!(d["n"], XacroValue::Null);
     }
 
     #[test]
