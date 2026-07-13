@@ -69,11 +69,11 @@ mod xacro_builtins;
 #[cfg(not(target_arch = "wasm32"))]
 pub use dom::process_document;
 pub use dom::{process_document_with, ProcessError, DEFAULT_MAX_EXPANSION_DEPTH};
-pub use includes::{FnIncludeReader, IncludeReader};
-#[cfg(not(target_arch = "wasm32"))]
-pub use includes::FsIncludeReader;
 pub use error::EvalError;
 pub use eval::safe_eval;
+#[cfg(not(target_arch = "wasm32"))]
+pub use includes::FsIncludeReader;
+pub use includes::{FnIncludeReader, IncludeReader};
 pub use literal::eval_literal;
 pub use namespace::Namespace;
 pub use substitution_args::{AmentPackageResolver, FnPackageResolver, PackageResolver};

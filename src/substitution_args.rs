@@ -386,7 +386,9 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
             let table = table.clone();
             vm.new_function(
                 "arg",
-                move |name: String, vm: &rustpython_vm::VirtualMachine| -> rustpython_vm::PyResult {
+                move |name: String,
+                      vm: &rustpython_vm::VirtualMachine|
+                      -> rustpython_vm::PyResult {
                     match table.get(&name) {
                         Some(raw) => Ok(crate::bridge::to_py(&convert_value_auto(raw), vm)),
                         None => Err(vm.new_key_error(vm.ctx.new_str(name).into())),
@@ -471,9 +473,15 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
     // checks this whole set before falling back to the args table): the callables,
     // the bool constants, and every math symbol safe_eval injects. The math names
     // come from the same injector safe_eval uses, so this cannot drift.
-    let mut excluded: HashSet<String> =
-        EVAL_FUNCTION_NAMES.iter().map(|s| (*s).to_owned()).collect();
-    excluded.extend(EVAL_BOOL_CONSTANTS.iter().map(|(name, _)| (*name).to_owned()));
+    let mut excluded: HashSet<String> = EVAL_FUNCTION_NAMES
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    excluded.extend(
+        EVAL_BOOL_CONSTANTS
+            .iter()
+            .map(|(name, _)| (*name).to_owned()),
+    );
     excluded.extend(crate::eval::injected_math_names());
 
     // (b) properties: the bool constants as bare names, then EVERY arg whose name
@@ -507,8 +515,12 @@ const EVAL_FUNCTION_NAMES: &[&str] = &["arg", "dirname", "env", "optenv", "find"
 /// guard. `True`/`False` mirror Python's keyword constants; `true`/`false` are
 /// xacro's lowercase aliases (the ones that are actually name-resolved, so the
 /// guard protects them from an arg of the same name).
-const EVAL_BOOL_CONSTANTS: &[(&str, bool)] =
-    &[("True", true), ("False", false), ("true", true), ("false", false)];
+const EVAL_BOOL_CONSTANTS: &[(&str, bool)] = &[
+    ("True", true),
+    ("False", false),
+    ("true", true),
+    ("false", false),
+];
 
 /// Canonical `convert_value(value, 'auto')`: numeric if it parses (float if it
 /// has a `.`, else int), bool for `true`/`false` (case-insensitive), else the
@@ -729,7 +741,8 @@ mod tests {
         // $(eval): canonical's _DictWrapper checks functions first. An arg `find`
         // collides with the find() function; `find(...)` must call the function.
         let mut ctx = fake_ctx();
-        ctx.args.insert("find".to_owned(), "SOME_ARG_VALUE".to_owned());
+        ctx.args
+            .insert("find".to_owned(), "SOME_ARG_VALUE".to_owned());
         assert_eq!(
             resolve_args("$(eval find('collision_pkg'))", &mut ctx).unwrap(),
             "/share/collision_pkg"

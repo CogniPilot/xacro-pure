@@ -103,7 +103,11 @@ fn yaml_wrap_fn(vm: &VirtualMachine) -> Option<PyObjectRef> {
     // `_wrap` and cache it on the builtins dict so subsequent `to_py` calls (and
     // the `load_yaml` Rust closure, same VM) reuse it.
     let code = vm
-        .compile(WRAPPER_BOOTSTRAP, compiler::Mode::Exec, "<yaml-wrapper>".to_owned())
+        .compile(
+            WRAPPER_BOOTSTRAP,
+            compiler::Mode::Exec,
+            "<yaml-wrapper>".to_owned(),
+        )
         .ok()?;
     let scope = vm.new_scope_with_builtins();
     vm.run_code_obj(code, scope.clone()).ok()?;

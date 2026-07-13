@@ -141,9 +141,7 @@ fn lazy_circular_definition_exact_error() {
     def_value(&mut t, "b", "${a}");
 
     let top = t.top_scope();
-    let err = t
-        .get(top, "a")
-        .expect_err("circular definition must error");
+    let err = t.get(top, "a").expect_err("circular definition must error");
     let msg = match err {
         EvalError::Runtime(m) => m,
         other => panic!("expected Runtime error, got {other:?}"),
@@ -351,9 +349,7 @@ fn is_valid_name_rejects_keyword() {
         .expect_err("keyword name must be rejected");
     assert_eq!(
         err,
-        EvalError::Runtime(
-            "Property names must be valid python identifiers: class".to_owned()
-        )
+        EvalError::Runtime("Property names must be valid python identifiers: class".to_owned())
     );
 }
 
@@ -368,9 +364,7 @@ fn definition_rejects_double_underscore_prefix() {
         .expect_err("__ name must be rejected");
     assert_eq!(
         err,
-        EvalError::Runtime(
-            "Property names must not start with double underscore:__x".to_owned()
-        )
+        EvalError::Runtime("Property names must not start with double underscore:__x".to_owned())
     );
 }
 
@@ -450,7 +444,10 @@ fn eval_text_typed_single_vs_str_join() {
     def_value(&mut t, "d", "${dict(x=1.0)}");
     let mut expected = IndexMap::new();
     expected.insert("x".to_owned(), XacroValue::Float(1.0));
-    assert_eq!(eval_text_at(&mut t, top, "${d}"), XacroValue::Dict(expected));
+    assert_eq!(
+        eval_text_at(&mut t, top, "${d}"),
+        XacroValue::Dict(expected)
+    );
 }
 
 #[test]
@@ -501,7 +498,10 @@ fn embedded_expr_can_call_registered_function() {
     def_value(&mut t, "n", "${4}");
     let top = t.top_scope();
     // ${triple(n)} -> 12 (property `n`=4 passed to the registered fn).
-    assert_eq!(eval_text_at(&mut t, top, "${triple(n)}"), XacroValue::int(12));
+    assert_eq!(
+        eval_text_at(&mut t, top, "${triple(n)}"),
+        XacroValue::int(12)
+    );
 }
 
 // ---------------------------------------------------------------------------

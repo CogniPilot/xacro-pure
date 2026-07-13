@@ -140,12 +140,7 @@ fn fxhash(s: &str) -> u64 {
 /// Assert the port's expanded link set equals `expected`, AND (when enabled)
 /// equals the oracle's. `yaml` is referenced by `load_yaml(name)`; for the
 /// oracle the file is written next to the xacro, so reference it by BASENAME.
-fn assert_pipeline(
-    src: &str,
-    mappings: &[(&str, &str)],
-    yaml: &[(&str, &str)],
-    expected: &[&str],
-) {
+fn assert_pipeline(src: &str, mappings: &[(&str, &str)], yaml: &[(&str, &str)], expected: &[&str]) {
     let port_xml = port_expand(src, mappings, yaml);
     let port_links = link_names(&port_xml);
     let expected: Vec<String> = expected.iter().map(|s| (*s).to_owned()).collect();
@@ -186,34 +181,28 @@ fn doc(body: &str) -> String {
 
 #[test]
 fn properties_and_late_binding() {
-    let src = doc(
-        "  <xacro:property name=\"base\" value=\"${10}\"/>\n\
+    let src = doc("  <xacro:property name=\"base\" value=\"${10}\"/>\n\
          \x20 <xacro:property name=\"derived\" value=\"${base*2}\"/>\n\
          \x20 <xacro:property name=\"base\" value=\"${100}\"/>\n\
-         \x20 <link name=\"d_${derived}\"/>\n",
-    );
+         \x20 <link name=\"d_${derived}\"/>\n");
     // derived is lazy -> late binding -> base=100 -> 200.
     assert_pipeline(&src, &[], &[], &["d_200"]);
 }
 
 #[test]
 fn if_unless_conditionals() {
-    let src = doc(
-        "  <xacro:property name=\"flag\" value=\"true\"/>\n\
+    let src = doc("  <xacro:property name=\"flag\" value=\"true\"/>\n\
          \x20 <xacro:if value=\"${flag}\"><link name=\"on\"/></xacro:if>\n\
          \x20 <xacro:unless value=\"${flag}\"><link name=\"off\"/></xacro:unless>\n\
          \x20 <xacro:if value=\"${1 > 2}\"><link name=\"never\"/></xacro:if>\n\
-         \x20 <xacro:unless value=\"${1 > 2}\"><link name=\"always\"/></xacro:unless>\n",
-    );
+         \x20 <xacro:unless value=\"${1 > 2}\"><link name=\"always\"/></xacro:unless>\n");
     assert_pipeline(&src, &[], &[], &["on", "always"]);
 }
 
 #[test]
 fn arg_default_and_override() {
-    let src = doc(
-        "  <xacro:arg name=\"robot\" default=\"so100\"/>\n\
-         \x20 <link name=\"a_$(arg robot)\"/>\n",
-    );
+    let src = doc("  <xacro:arg name=\"robot\" default=\"so100\"/>\n\
+         \x20 <link name=\"a_$(arg robot)\"/>\n");
     // default.
     assert_pipeline(&src, &[], &[], &["a_so100"]);
     // overridden by a mapping.
@@ -224,10 +213,8 @@ fn arg_default_and_override() {
 fn arg_inside_expression_resolves_first() {
     // The OpenArm pattern: $(arg ...) inside a ${...} string literal resolves to
     // TEXT before the surrounding python expression evaluates.
-    let src = doc(
-        "  <xacro:arg name=\"robot\" default=\"so100\"/>\n\
-         \x20 <link name=\"b_${'pre_' + '$(arg robot)'}\"/>\n",
-    );
+    let src = doc("  <xacro:arg name=\"robot\" default=\"so100\"/>\n\
+         \x20 <link name=\"b_${'pre_' + '$(arg robot)'}\"/>\n");
     assert_pipeline(&src, &[], &[], &["b_pre_so100"]);
 }
 
@@ -236,10 +223,8 @@ fn arg_inside_bare_expression_arithmetic() {
     // A `$(arg n)` as a bare sub-token of a `${...}` arithmetic expression: it
     // resolves to text (3) FIRST, then the surrounding python arithmetic runs
     // (3 * 4 = 12). Pins the handle_expr inner-eval_text-before-safe_eval rule.
-    let src = doc(
-        "  <xacro:arg name=\"n\" default=\"3\"/>\n\
-         \x20 <link name=\"x_${$(arg n) * 4}\"/>\n",
-    );
+    let src = doc("  <xacro:arg name=\"n\" default=\"3\"/>\n\
+         \x20 <link name=\"x_${$(arg n) * 4}\"/>\n");
     assert_pipeline(&src, &[], &[], &["x_12"]);
 }
 
@@ -276,12 +261,10 @@ fn load_yaml_subscript_and_units() {
 
 #[test]
 fn nested_property_and_arithmetic() {
-    let src = doc(
-        "  <xacro:property name=\"w\" value=\"${1+2}\"/>\n\
+    let src = doc("  <xacro:property name=\"w\" value=\"${1+2}\"/>\n\
          \x20 <xacro:property name=\"big\" value=\"${w*10}\"/>\n\
          \x20 <link name=\"p_${big}\"/>\n\
-         \x20 <link name=\"c_${1 + 2 * 3}\"/>\n",
-    );
+         \x20 <link name=\"c_${1 + 2 * 3}\"/>\n");
     assert_pipeline(&src, &[], &[], &["p_30", "c_7"]);
 }
 
@@ -296,16 +279,14 @@ fn float_str_scientific_notation() {
     // < -4 or >= 16. Re-derived against the live oracle (see also the diff probe
     // in this file). `${1e15}` stays fixed (`1000000000000000.0`), `${1e16}`
     // flips to `1e+16`; small magnitudes mirror (`${1e-7}` -> `1e-07`).
-    let src = doc(
-        "  <link name=\"a${1e16}\"/>\n\
+    let src = doc("  <link name=\"a${1e16}\"/>\n\
          \x20 <link name=\"b${1e-7}\"/>\n\
          \x20 <link name=\"c${0.00009}\"/>\n\
          \x20 <link name=\"d${1.5e300}\"/>\n\
          \x20 <link name=\"e${1e15}\"/>\n\
          \x20 <link name=\"f${3.0}\"/>\n\
          \x20 <link name=\"g${[1e16,1e-7]}\"/>\n\
-         \x20 <link name=\"h${123456789012345680.0}\"/>\n",
-    );
+         \x20 <link name=\"h${123456789012345680.0}\"/>\n");
     assert_pipeline(
         &src,
         &[],
@@ -327,8 +308,7 @@ fn float_str_scientific_notation() {
 fn math_symbols_bare_and_namespace() {
     // pi/radians/sin/sqrt/floor/atan2/tau/degrees are exposed both bare and under
     // a `math` namespace, matching canonical create_global_symbols.
-    let src = doc(
-        "  <link name=\"a${pi}\"/>\n\
+    let src = doc("  <link name=\"a${pi}\"/>\n\
          \x20 <link name=\"b${radians(90)}\"/>\n\
          \x20 <link name=\"c${sin(0)}\"/>\n\
          \x20 <link name=\"d${sqrt(4)}\"/>\n\
@@ -337,8 +317,7 @@ fn math_symbols_bare_and_namespace() {
          \x20 <link name=\"g${math.pi}\"/>\n\
          \x20 <link name=\"h${tau}\"/>\n\
          \x20 <link name=\"i${degrees(pi)}\"/>\n\
-         \x20 <link name=\"j${pi/2}\"/>\n",
-    );
+         \x20 <link name=\"j${pi/2}\"/>\n");
     assert_pipeline(
         &src,
         &[],
@@ -366,13 +345,16 @@ fn tuple_results_str() {
     // XML attribute the serializer entity-escapes `'` as `&apos;` (a pretty-printer
     // concern, not the value), so we probe numeric/nested tuples here and
     // pin the str-repr of a string-tuple directly below.
-    let src = doc(
-        "  <link name=\"a${(1, 2.0)}\"/>\n\
+    let src = doc("  <link name=\"a${(1, 2.0)}\"/>\n\
          \x20 <link name=\"b${(1,)}\"/>\n\
          \x20 <link name=\"c${()}\"/>\n\
-         \x20 <link name=\"d${(1, (2, 3))}\"/>\n",
+         \x20 <link name=\"d${(1, (2, 3))}\"/>\n");
+    assert_pipeline(
+        &src,
+        &[],
+        &[],
+        &["a(1, 2.0)", "b(1,)", "c()", "d(1, (2, 3))"],
     );
-    assert_pipeline(&src, &[], &[], &["a(1, 2.0)", "b(1,)", "c()", "d(1, (2, 3))"]);
 }
 
 #[test]
@@ -382,12 +364,10 @@ fn xacro_namespace_api() {
     // exponent, so `mass: 2.5e16` stays the STRING `2.5e16` (NOT a float), while
     // `angle: 1.0e-7` is a float -> `1e-07`.
     let yaml = "angle: 1.0e-7\nmass: 2.5e16\n";
-    let src = doc(
-        "  <xacro:arg name=\"aa\" default=\"hi\"/>\n\
+    let src = doc("  <xacro:arg name=\"aa\" default=\"hi\"/>\n\
          \x20 <link name=\"a${xacro.load_yaml('p.yaml')['angle']}\"/>\n\
          \x20 <link name=\"b${load_yaml('p.yaml')['mass']}\"/>\n\
-         \x20 <link name=\"c${xacro.arg('aa')}\"/>\n",
-    );
+         \x20 <link name=\"c${xacro.arg('aa')}\"/>\n");
     assert_pipeline(
         &src,
         &[],
@@ -400,15 +380,13 @@ fn xacro_namespace_api() {
 fn eval_substitution_bare_arg_and_math() {
     // $(eval ...) resolves bare arg names (auto-typed) and math symbols, matching
     // canonical's _DictWrapper + _eval_dict.
-    let src = doc(
-        "  <xacro:arg name=\"count\" default=\"3\"/>\n\
+    let src = doc("  <xacro:arg name=\"count\" default=\"3\"/>\n\
          \x20 <xacro:arg name=\"w\" default=\"1.5\"/>\n\
          \x20 <xacro:arg name=\"flag\" default=\"true\"/>\n\
          \x20 <link name=\"a$(eval count + 10)\"/>\n\
          \x20 <link name=\"b$(eval w * 2)\"/>\n\
          \x20 <link name=\"c$(eval flag)\"/>\n\
-         \x20 <link name=\"d$(eval pi)\"/>\n",
-    );
+         \x20 <link name=\"d$(eval pi)\"/>\n");
     assert_pipeline(
         &src,
         &[],
@@ -434,7 +412,10 @@ fn comments_before_control_nodes_removed() {
     assert!(!xml.contains("propdoc"), "propdoc comment leaked:\n{xml}");
     assert!(!xml.contains("guard"), "guard comment leaked:\n{xml}");
     assert!(!xml.contains("argdoc"), "argdoc comment leaked:\n{xml}");
-    assert!(xml.contains("keepme"), "plain comment wrongly removed:\n{xml}");
+    assert!(
+        xml.contains("keepme"),
+        "plain comment wrongly removed:\n{xml}"
+    );
 }
 
 #[test]
@@ -472,13 +453,11 @@ fn lexer_rejects_malformed_dollar() {
 fn lexer_accepts_wellformed_dollar() {
     // Well-formed `$` sequences both serializers accept: a lone/trailing $, a $
     // before a non-brace char, a $$-escape, and consecutive $-runs.
-    let src = doc(
-        "  <link name=\"cost$\"/>\n\
+    let src = doc("  <link name=\"cost$\"/>\n\
          \x20 <link name=\"p$5\"/>\n\
          \x20 <link name=\"a$b$c\"/>\n\
          \x20 <link name=\"lit$${x}\"/>\n\
-         \x20 <link name=\"a$$${y}b\"/>\n",
-    );
+         \x20 <link name=\"a$$${y}b\"/>\n");
     assert_pipeline(
         &src,
         &[],

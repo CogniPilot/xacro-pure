@@ -165,7 +165,11 @@ fn format_py_float(f: f64) -> String {
         return "nan".to_owned();
     }
     if f.is_infinite() {
-        return if f > 0.0 { "inf".to_owned() } else { "-inf".to_owned() };
+        return if f > 0.0 {
+            "inf".to_owned()
+        } else {
+            "-inf".to_owned()
+        };
     }
     if f == 0.0 {
         // Python distinguishes 0.0 / -0.0 in str().

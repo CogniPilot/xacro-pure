@@ -320,7 +320,10 @@ where
     // BYTE-comparable to canonical `xacro` (which serializes with the monkey-
     // patched `toprettyxml`). `current_file` supplies the banner filename.
     doc_nodes[root_idx] = XMLNode::Element(root);
-    Ok(crate::serialize::to_canonical_string(&doc_nodes, current_file))
+    Ok(crate::serialize::to_canonical_string(
+        &doc_nodes,
+        current_file,
+    ))
 }
 
 /// Port of `eval_all` for one element: evaluate its attributes, then walk its
@@ -430,7 +433,10 @@ fn collect_namespaces_to_import(root: &Element, pending: &mut xmltree::Namespace
             {
                 continue;
             }
-            pending.0.entry(prefix.clone()).or_insert_with(|| uri.clone());
+            pending
+                .0
+                .entry(prefix.clone())
+                .or_insert_with(|| uri.clone());
         }
     }
 }
@@ -844,7 +850,9 @@ fn handle_include(
         .attributes
         .get("filename")
         .ok_or_else(|| missing_attr("filename", "include"))?;
-    let filename_spec = tables.eval_text_in(scopes.prop, raw_filename)?.to_python_str();
+    let filename_spec = tables
+        .eval_text_in(scopes.prop, raw_filename)?
+        .to_python_str();
 
     // Optional (swallow read error).
     let optional = match elt.attributes.get("optional") {
@@ -1109,8 +1117,7 @@ fn is_xacro(elt: &Element) -> bool {
 /// Remove the `xmlns:xacro` declaration from `elt`'s namespace map.
 fn strip_xacro_namespace(elt: &mut Element) {
     if let Some(ns) = elt.namespaces.as_mut() {
-        ns.0
-            .retain(|prefix, uri| prefix.as_str() != XACRO_PREFIX && uri.as_str() != XACRO_NS_URI);
+        ns.0.retain(|prefix, uri| prefix.as_str() != XACRO_PREFIX && uri.as_str() != XACRO_NS_URI);
     }
 }
 

@@ -108,7 +108,9 @@ where
         let read = bare.clone();
         vm.new_function(
             name,
-            move |filename: String, vm: &rustpython_vm::VirtualMachine| -> rustpython_vm::PyResult {
+            move |filename: String,
+                  vm: &rustpython_vm::VirtualMachine|
+                  -> rustpython_vm::PyResult {
                 let src = read(&filename)
                     .map_err(|e| vm.new_runtime_error(format!("load_yaml('{filename}'): {e}")))?;
                 let value = load_yaml_str(&src)
@@ -153,7 +155,8 @@ impl Builder {
                 .map_err(|e| EvalError::Runtime(format!("YAML parse error: {e}")))?;
             match event {
                 Event::StreamEnd => break,
-                Event::StreamStart | Event::DocumentStart | Event::DocumentEnd | Event::Nothing => {}
+                Event::StreamStart | Event::DocumentStart | Event::DocumentEnd | Event::Nothing => {
+                }
                 Event::Alias(_) => {
                     return Err(EvalError::Runtime(
                         "YAML aliases are not supported in load_yaml".to_owned(),
@@ -315,7 +318,9 @@ fn scalar_to_value(
 /// Build the "unknown tag" error, matching PyYAML's `ConstructorError` phrasing
 /// ("could not determine a constructor for the tag '...'").
 fn unknown_tag_error(tag: &str) -> EvalError {
-    EvalError::Runtime(format!("could not determine a constructor for the tag '{tag}'"))
+    EvalError::Runtime(format!(
+        "could not determine a constructor for the tag '{tag}'"
+    ))
 }
 
 /// The standard `tag:yaml.org,2002:` tags that PyYAML's SafeLoader constructs but
@@ -531,7 +536,7 @@ fn is_pyyaml_float(text: &str) -> bool {
             return false;
         }
         i += 1; // consume '.'
-        // requires at least one digit after the point: `\.[0-9][0-9_]*`
+                // requires at least one digit after the point: `\.[0-9][0-9_]*`
         if i >= bytes.len() || !bytes[i].is_ascii_digit() {
             return false;
         }
@@ -550,7 +555,7 @@ fn is_pyyaml_float(text: &str) -> bool {
             return false;
         }
         i += 1; // consume '.'
-        // fractional part is `[0-9_]*` (may be empty: `1.` is a float)
+                // fractional part is `[0-9_]*` (may be empty: `1.` is a float)
         while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'_') {
             i += 1;
         }
@@ -751,10 +756,7 @@ mod tests {
         // explicit tag (`y`/`n` are resolver-only, never constructor keys).
         for text in ["y", "n", "tru", "1"] {
             let src = format!("x: !!bool {text}\n");
-            assert!(
-                load_yaml_str(&src).is_err(),
-                "!!bool {text} should error"
-            );
+            assert!(load_yaml_str(&src).is_err(), "!!bool {text} should error");
         }
     }
 

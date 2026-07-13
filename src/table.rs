@@ -538,7 +538,10 @@ impl PropertyTables {
                 if chosen.contains(&k) {
                     continue;
                 }
-                if matches!(self.scopes[id.0].bindings.get(&k), Some(Binding::Namespace(_))) {
+                if matches!(
+                    self.scopes[id.0].bindings.get(&k),
+                    Some(Binding::Namespace(_))
+                ) {
                     // A nested/sibling namespace binding: not a plain property,
                     // and including it risks self-recursion. Skip it.
                     continue;
@@ -693,12 +696,13 @@ impl PropertyTables {
         // empty string, the value used for the absent default `'false'`).
         let remove_value =
             self.eval_text_here(remove.unwrap_or("false"), scope_id, functions, subst)?;
-        let remove_flag =
-            get_boolean_value(&remove_value, remove.unwrap_or_default()).map_err(EvalError::Runtime)?;
+        let remove_flag = get_boolean_value(&remove_value, remove.unwrap_or_default())
+            .map_err(EvalError::Runtime)?;
 
         // mutual exclusion of value / default / remove.
-        let n_set =
-            usize::from(value.is_some()) + usize::from(default.is_some()) + usize::from(remove_flag);
+        let n_set = usize::from(value.is_some())
+            + usize::from(default.is_some())
+            + usize::from(remove_flag);
         if n_set > 1 {
             return Err(EvalError::Runtime(format!(
                 "Property attributes default, value, and remove are mutually exclusive: {name}"
@@ -747,8 +751,8 @@ impl PropertyTables {
         // slot is the raw `lazy_eval` attribute, mirroring canonical.
         let lazy_value =
             self.eval_text_here(lazy_eval.unwrap_or("true"), scope_id, functions, subst)?;
-        let mut lazy =
-            get_boolean_value(&lazy_value, lazy_eval.unwrap_or_default()).map_err(EvalError::Runtime)?;
+        let mut lazy = get_boolean_value(&lazy_value, lazy_eval.unwrap_or_default())
+            .map_err(EvalError::Runtime)?;
 
         // scope= : retarget the destination table; global/parent FORCE eager.
         let target = match scope {

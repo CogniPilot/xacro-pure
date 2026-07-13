@@ -32,11 +32,7 @@ fn relative_include_splices_children() {
         .collect();
     assert_eq!(
         names,
-        vec![
-            "name=from_include_a",
-            "name=from_include_b",
-            "name=local"
-        ]
+        vec!["name=from_include_a", "name=from_include_b", "name=local"]
     );
     assert!(!out.contains("xacro:include"));
     assert_semantic_parity_with_files(main, &[("parts.xacro", parts)]);
@@ -152,7 +148,10 @@ fn namespaced_property_dotted_access() {
   <xacro:property name="size" value="99"/>
 </robot>"#;
     let out = port_expand_with_files(main, &[("libsize.xacro", lib)]);
-    assert!(out.contains(r#"<link name="l_99""#), "ns.prop dotted access failed: {out}");
+    assert!(
+        out.contains(r#"<link name="l_99""#),
+        "ns.prop dotted access failed: {out}"
+    );
     assert_semantic_parity_with_files(main, &[("libsize.xacro", lib)]);
 }
 
@@ -173,8 +172,14 @@ fn namespaced_property_dotted_access_parent_fallback() {
   <xacro:property name="own" value="OWN"/>
 </robot>"#;
     let out = port_expand_with_files(main, &[("libfb.xacro", lib)]);
-    assert!(out.contains(r#"<link name="a_OWN""#), "ns own prop failed: {out}");
-    assert!(out.contains(r#"<link name="b_OUTER""#), "ns parent fallback failed: {out}");
+    assert!(
+        out.contains(r#"<link name="a_OWN""#),
+        "ns own prop failed: {out}"
+    );
+    assert!(
+        out.contains(r#"<link name="b_OUTER""#),
+        "ns parent fallback failed: {out}"
+    );
     assert_semantic_parity_with_files(main, &[("libfb.xacro", lib)]);
 }
 
@@ -195,7 +200,10 @@ fn namespaced_macro_calls_sibling_reading_namespace_property() {
   <xacro:macro name="a" params=""><a/><xacro:b/></xacro:macro>
 </robot>"#;
     let out = port_expand_with_files(main, &[("libsib.xacro", lib)]);
-    assert!(out.contains(r#"<b v="SIBPROP""#), "ns sibling call failed: {out}");
+    assert!(
+        out.contains(r#"<b v="SIBPROP""#),
+        "ns sibling call failed: {out}"
+    );
     assert_semantic_parity_with_files(main, &[("libsib.xacro", lib)]);
 }
 

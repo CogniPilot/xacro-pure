@@ -158,28 +158,40 @@ where
     // ---- log with optional base (math.log(x[, base])) ----
     bind(
         "log",
-        vm.new_function("log", |x: ArgIntoFloat, base: OptionalArg<ArgIntoFloat>| -> f64 {
-            let x = f64::from(x);
-            match base {
-                OptionalArg::Present(b) => x.log(f64::from(b)),
-                OptionalArg::Missing => x.ln(),
-            }
-        })
+        vm.new_function(
+            "log",
+            |x: ArgIntoFloat, base: OptionalArg<ArgIntoFloat>| -> f64 {
+                let x = f64::from(x);
+                match base {
+                    OptionalArg::Present(b) => x.log(f64::from(b)),
+                    OptionalArg::Missing => x.ln(),
+                }
+            },
+        )
         .into(),
     );
 
     // ---- int-returning (floor/ceil/trunc/factorial/gcd/lcm/comb/perm/isqrt) ----
     bind(
         "floor",
-        vm.new_function("floor", |x: ArgIntoFloat| -> i64 { f64::from(x).floor() as i64 }).into(),
+        vm.new_function("floor", |x: ArgIntoFloat| -> i64 {
+            f64::from(x).floor() as i64
+        })
+        .into(),
     );
     bind(
         "ceil",
-        vm.new_function("ceil", |x: ArgIntoFloat| -> i64 { f64::from(x).ceil() as i64 }).into(),
+        vm.new_function("ceil", |x: ArgIntoFloat| -> i64 {
+            f64::from(x).ceil() as i64
+        })
+        .into(),
     );
     bind(
         "trunc",
-        vm.new_function("trunc", |x: ArgIntoFloat| -> i64 { f64::from(x).trunc() as i64 }).into(),
+        vm.new_function("trunc", |x: ArgIntoFloat| -> i64 {
+            f64::from(x).trunc() as i64
+        })
+        .into(),
     );
     bind(
         "factorial",
@@ -191,7 +203,8 @@ where
     );
     bind(
         "gcd",
-        vm.new_function("gcd", |a: i64, b: i64| -> i64 { gcd_i64(a.abs(), b.abs()) }).into(),
+        vm.new_function("gcd", |a: i64, b: i64| -> i64 { gcd_i64(a.abs(), b.abs()) })
+            .into(),
     );
     bind(
         "lcm",
@@ -206,11 +219,13 @@ where
     );
     bind(
         "isqrt",
-        vm.new_function("isqrt", |n: i64| -> i64 { (n.max(0) as f64).sqrt() as i64 }).into(),
+        vm.new_function("isqrt", |n: i64| -> i64 { (n.max(0) as f64).sqrt() as i64 })
+            .into(),
     );
     bind(
         "comb",
-        vm.new_function("comb", |n: i64, k: i64| -> i64 { binom(n, k) }).into(),
+        vm.new_function("comb", |n: i64, k: i64| -> i64 { binom(n, k) })
+            .into(),
     );
     bind(
         "perm",
@@ -231,15 +246,22 @@ where
     // ---- bool-returning predicates ----
     bind(
         "isnan",
-        vm.new_function("isnan", |x: ArgIntoFloat| -> bool { f64::from(x).is_nan() }).into(),
+        vm.new_function("isnan", |x: ArgIntoFloat| -> bool { f64::from(x).is_nan() })
+            .into(),
     );
     bind(
         "isinf",
-        vm.new_function("isinf", |x: ArgIntoFloat| -> bool { f64::from(x).is_infinite() }).into(),
+        vm.new_function("isinf", |x: ArgIntoFloat| -> bool {
+            f64::from(x).is_infinite()
+        })
+        .into(),
     );
     bind(
         "isfinite",
-        vm.new_function("isfinite", |x: ArgIntoFloat| -> bool { f64::from(x).is_finite() }).into(),
+        vm.new_function("isfinite", |x: ArgIntoFloat| -> bool {
+            f64::from(x).is_finite()
+        })
+        .into(),
     );
     bind(
         "isclose",

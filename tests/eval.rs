@@ -67,7 +67,10 @@ fn case5_percent_format() {
     // python3: '%.3f' % 1.23456 == '1.235'
     let mut ns = Namespace::new();
     ns.set("v", XacroValue::Float(1.23456));
-    assert_eq!(eval_ns("'%.3f' % v", &ns), XacroValue::Str("1.235".to_owned()));
+    assert_eq!(
+        eval_ns("'%.3f' % v", &ns),
+        XacroValue::Str("1.235".to_owned())
+    );
 }
 
 #[test]
@@ -267,7 +270,10 @@ fn bigint_str_renders_full_magnitude() {
     // is how a typed big-int result is finally serialized into XML text).
     match eval("2**100") {
         XacroValue::Int(_) => {
-            assert_eq!(eval("2**100").to_python_str(), "1267650600228229401496703205376");
+            assert_eq!(
+                eval("2**100").to_python_str(),
+                "1267650600228229401496703205376"
+            );
         }
         other => panic!("expected Int, got {other:?}"),
     }
@@ -279,7 +285,10 @@ fn bigint_injected_property_round_trips() {
     // full precision: (2**100) + 1 evaluated where the base is passed in.
     let mut ns = Namespace::new();
     ns.set("base", big("1267650600228229401496703205376"));
-    assert_eq!(eval_ns("base + 1", &ns), big("1267650600228229401496703205377"));
+    assert_eq!(
+        eval_ns("base + 1", &ns),
+        big("1267650600228229401496703205377")
+    );
 }
 
 #[test]

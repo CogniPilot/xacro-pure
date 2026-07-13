@@ -340,7 +340,12 @@ impl MacroTables {
     /// with its parallel property `symbol_scope`, returning its id. Mirrors
     /// `macros[ns] = NameSpace()` alongside `symbols[ns] = NameSpace(...)` in
     /// `process_include` (re-using an existing one if `ns` was already declared).
-    pub fn namespace(&mut self, scope: MacroScopeId, ns: &str, symbol_scope: ScopeId) -> MacroScopeId {
+    pub fn namespace(
+        &mut self,
+        scope: MacroScopeId,
+        ns: &str,
+        symbol_scope: ScopeId,
+    ) -> MacroScopeId {
         if let Some(&existing) = self.scopes[scope.0].namespaces.get(ns) {
             return existing;
         }
@@ -485,7 +490,10 @@ mod tests {
     #[test]
     fn forward_with_default() {
         let (_n, d) = parse_params("x:=^|0.0");
-        assert_eq!(d.get("x"), Some(&(Some("x".to_owned()), Some("0.0".to_owned()))));
+        assert_eq!(
+            d.get("x"),
+            Some(&(Some("x".to_owned()), Some("0.0".to_owned())))
+        );
     }
 
     #[test]
@@ -520,7 +528,8 @@ mod tests {
     #[test]
     fn multiline_params() {
         // The SO-ARM macro's real param string (newline-separated, indented).
-        let params = "\n      prefix\n      color:='1.0 0.82 0.12 1.0'\n      parent:=world\n      x:=0.0";
+        let params =
+            "\n      prefix\n      color:='1.0 0.82 0.12 1.0'\n      parent:=world\n      x:=0.0";
         let (n, d) = parse_params(params);
         assert_eq!(n, vec!["prefix", "color", "parent", "x"]);
         assert_eq!(

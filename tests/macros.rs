@@ -273,7 +273,10 @@ fn scope_parent_from_macro_body_reaches_caller() {
   <link name="${leaked}"/>
 </robot>"#;
     let out = port_expand(src);
-    assert!(out.contains(r#"<link name="LEAKED""#), "scope=parent failed: {out}");
+    assert!(
+        out.contains(r#"<link name="LEAKED""#),
+        "scope=parent failed: {out}"
+    );
     assert_semantic_parity(src);
 }
 
@@ -344,8 +347,17 @@ fn deep_but_legal_macro_nesting_expands() {
   <xacro:chain n="40"/>
 </robot>"#;
     let out = port_expand(src);
-    assert!(out.contains(r#"<level d="40""#), "outermost level missing: {out}");
-    assert!(out.contains(r#"<level d="1""#), "innermost level missing: {out}");
-    assert!(!out.contains("expansion depth"), "legal nesting tripped the cap: {out}");
+    assert!(
+        out.contains(r#"<level d="40""#),
+        "outermost level missing: {out}"
+    );
+    assert!(
+        out.contains(r#"<level d="1""#),
+        "innermost level missing: {out}"
+    );
+    assert!(
+        !out.contains("expansion depth"),
+        "legal nesting tripped the cap: {out}"
+    );
     assert_semantic_parity(src);
 }

@@ -167,10 +167,7 @@ fn eval_expr(
     // The live substitution-args snapshot, so `xacro.arg(name)` inside the
     // expression resolves against the current arg table (canonical
     // `substitution_args_context['arg']`). Empty when no document context.
-    let args_snapshot = subst
-        .as_ref()
-        .map(|c| c.args.clone())
-        .unwrap_or_default();
+    let args_snapshot = subst.as_ref().map(|c| c.args.clone()).unwrap_or_default();
 
     safe_eval_deferred_with_args(src, &props, functions, &deferred_errors, &args_snapshot)
 }

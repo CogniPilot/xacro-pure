@@ -252,7 +252,8 @@ fn oracle_remove_float_truthy() {
 
     let mut t = PropertyTables::new();
     let top = t.top_scope();
-    t.set_property(top, &PropertyDef::value("x", "${10}")).unwrap();
+    t.set_property(top, &PropertyDef::value("x", "${10}"))
+        .unwrap();
     t.set_property(
         top,
         &PropertyDef {

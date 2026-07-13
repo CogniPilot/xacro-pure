@@ -59,7 +59,10 @@ fn underscore_values_stay_string_pep515() {
     assert_eq!(eval_literal("1_000"), XacroValue::Str("1_000".to_owned()));
     // python3: "wheel_1" -> 'wheel_1' (string; it would not parse numeric anyway,
     // but the underscore guard short-circuits it explicitly).
-    assert_eq!(eval_literal("wheel_1"), XacroValue::Str("wheel_1".to_owned()));
+    assert_eq!(
+        eval_literal("wheel_1"),
+        XacroValue::Str("wheel_1".to_owned())
+    );
     // A float-looking value with an underscore also stays a string.
     assert_eq!(eval_literal("1_0.5"), XacroValue::Str("1_0.5".to_owned()));
 }

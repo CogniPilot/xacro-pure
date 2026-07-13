@@ -94,7 +94,16 @@ pub fn safe_eval_with(
     functions: &Namespace,
 ) -> Result<XacroValue, EvalError> {
     let empty_args = HashMap::new();
-    with_vm(|vm| eval_in_vm(vm, expr, props, Some(functions), &HashMap::new(), &empty_args))
+    with_vm(|vm| {
+        eval_in_vm(
+            vm,
+            expr,
+            props,
+            Some(functions),
+            &HashMap::new(),
+            &empty_args,
+        )
+    })
 }
 
 /// Like [`safe_eval_with`] but with a `deferred_errors` map of `name -> original
@@ -153,7 +162,11 @@ pub fn injected_math_names() -> Vec<String> {
 pub fn referenced_names(expr: &str) -> Result<Vec<String>, EvalError> {
     with_vm(|vm| {
         let code = vm
-            .compile(expr.trim(), vm::compiler::Mode::Eval, "<expression>".to_owned())
+            .compile(
+                expr.trim(),
+                vm::compiler::Mode::Eval,
+                "<expression>".to_owned(),
+            )
             .map_err(|e| EvalError::Compile(format!("{e}")))?;
         let mut invalid: Vec<String> = Vec::new();
         let mut names: Vec<String> = Vec::new();
@@ -216,7 +229,11 @@ fn eval_in_vm(
 ) -> Result<XacroValue, EvalError> {
     // (1) compile in eval mode. `expr.strip()` == Rust trim, matching canonical.
     let code = vm
-        .compile(expr.trim(), vm::compiler::Mode::Eval, "<expression>".to_owned())
+        .compile(
+            expr.trim(),
+            vm::compiler::Mode::Eval,
+            "<expression>".to_owned(),
+        )
         .map_err(|e| EvalError::Compile(format!("{e}")))?;
 
     // (2) the security gate: reject any referenced name beginning with `__`.
@@ -280,7 +297,9 @@ fn eval_in_vm(
         scope
             .globals
             .set_item("xacro", xacro_mod, vm)
-            .map_err(|e| EvalError::Bridge(format!("failed to inject 'xacro': {}", fmt_exc(vm, &e))))?;
+            .map_err(|e| {
+                EvalError::Bridge(format!("failed to inject 'xacro': {}", fmt_exc(vm, &e)))
+            })?;
     }
 
     // Inject the registered Rust functions FIRST (the load_yaml / radians seam),
@@ -312,7 +331,9 @@ fn eval_in_vm(
         scope
             .globals
             .set_item(name.as_str(), obj, vm)
-            .map_err(|e| EvalError::Bridge(format!("failed to inject '{name}': {}", fmt_exc(vm, &e))))?;
+            .map_err(|e| {
+                EvalError::Bridge(format!("failed to inject '{name}': {}", fmt_exc(vm, &e)))
+            })?;
     }
 
     // Also set `__builtins__` to an empty dict for good measure / parity with
@@ -322,7 +343,9 @@ fn eval_in_vm(
     scope
         .globals
         .set_item("__builtins__", empty.into(), vm)
-        .map_err(|e| EvalError::Bridge(format!("failed to blank __builtins__: {}", fmt_exc(vm, &e))))?;
+        .map_err(|e| {
+            EvalError::Bridge(format!("failed to blank __builtins__: {}", fmt_exc(vm, &e)))
+        })?;
 
     // (4) run + bridge the result back. If the run raises a `NameError` whose
     // `.name` is a name whose RESOLUTION we deferred (it errored during the
@@ -348,7 +371,10 @@ fn eval_in_vm(
 /// like CPython 3.10+, sets it), so a live-branch load of a deferred name can be
 /// mapped back to its original resolution error. Returns `None` if the attribute
 /// is absent or not a `str`.
-fn name_error_name(vm: &vm::VirtualMachine, e: &vm::builtins::PyBaseExceptionRef) -> Option<String> {
+fn name_error_name(
+    vm: &vm::VirtualMachine,
+    e: &vm::builtins::PyBaseExceptionRef,
+) -> Option<String> {
     let name_obj = e.as_object().get_attr("name", vm).ok()?;
     let s = name_obj.downcast_ref::<vm::builtins::PyStr>()?;
     Some(s.as_str().to_owned())
@@ -360,10 +386,26 @@ fn name_error_name(vm: &vm::VirtualMachine, e: &vm::builtins::PyBaseExceptionRef
 /// constants `True`/`False`/`None` are not dict entries and are always available.
 /// Everything in the VM's builtins NOT here is shadowed to a raising sentinel.
 const ALLOWED_BUILTINS: &[&str] = &[
-    "list", "dict", "map", "len", "str", "float", "int", "bool", "min", "max", "round", "sorted",
+    "list",
+    "dict",
+    "map",
+    "len",
+    "str",
+    "float",
+    "int",
+    "bool",
+    "min",
+    "max",
+    "round",
+    "sorted",
     "range",
     // Constants that may appear as builtins-dict entries; harmless to keep.
-    "True", "False", "None", "NotImplemented", "Ellipsis", "__debug__",
+    "True",
+    "False",
+    "None",
+    "NotImplemented",
+    "Ellipsis",
+    "__debug__",
 ];
 
 /// Shadow every VM builtin that is not on [`ALLOWED_BUILTINS`] with a sentinel
@@ -405,7 +447,10 @@ fn shadow_disallowed_builtins(
             .globals
             .set_item(name.as_str(), sentinel.into(), vm)
             .map_err(|e| {
-                EvalError::Bridge(format!("failed to shadow builtin '{name}': {}", fmt_exc(vm, &e)))
+                EvalError::Bridge(format!(
+                    "failed to shadow builtin '{name}': {}",
+                    fmt_exc(vm, &e)
+                ))
             })?;
     }
     Ok(())

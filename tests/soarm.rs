@@ -33,7 +33,10 @@ static ORACLE_LOCK: Mutex<()> = Mutex::new(());
 fn corpus_pkg_parent() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     let p = format!("{home}/git/hcdf-conversion-examples/ros2_so_arm");
-    if std::path::Path::new(&format!("{p}/so_arm101_description/urdf/so_arm101.urdf.xacro")).exists()
+    if std::path::Path::new(&format!(
+        "{p}/so_arm101_description/urdf/so_arm101.urdf.xacro"
+    ))
+    .exists()
     {
         Some(p)
     } else {
@@ -52,8 +55,9 @@ fn port_expand_soarm(pkg_parent: &str) -> String {
     let entry = soarm_entry(pkg_parent);
     let src = std::fs::read_to_string(&entry).expect("read SO-ARM entry");
     let parent = pkg_parent.to_owned();
-    let resolver: Box<dyn PackageResolver> =
-        Box::new(FnPackageResolver(move |p: &str| Ok(format!("{parent}/{p}"))));
+    let resolver: Box<dyn PackageResolver> = Box::new(FnPackageResolver(move |p: &str| {
+        Ok(format!("{parent}/{p}"))
+    }));
     let reader = FsIncludeReader;
     process_document_with(
         &src,
@@ -182,7 +186,10 @@ fn named(xml: &str, tag: &str) -> Vec<String> {
 
 /// Count occurrences of `<TAG ` in the expansion (a structural tally).
 fn tag_count(xml: &str, tag: &str) -> usize {
-    semantic_fields(xml).into_iter().filter(|(t, _)| t == tag).count()
+    semantic_fields(xml)
+        .into_iter()
+        .filter(|(t, _)| t == tag)
+        .count()
 }
 
 #[test]

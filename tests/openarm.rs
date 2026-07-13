@@ -44,7 +44,9 @@ fn corpus_pkg_parent() -> Option<String> {
 
 /// The OpenArm v20 entry xacro path.
 fn openarm_entry(pkg_parent: &str) -> String {
-    format!("{pkg_parent}/openarm_description/assets/robot/openarm_v2.0/urdf/openarm_v20.urdf.xacro")
+    format!(
+        "{pkg_parent}/openarm_description/assets/robot/openarm_v2.0/urdf/openarm_v20.urdf.xacro"
+    )
 }
 
 /// Expand OpenArm through the port. `$(find pkg)` maps to `<pkg_parent>/<pkg>`
@@ -55,8 +57,9 @@ fn port_expand_openarm(pkg_parent: &str) -> String {
     let entry = openarm_entry(pkg_parent);
     let src = std::fs::read_to_string(&entry).expect("read OpenArm entry");
     let parent = pkg_parent.to_owned();
-    let resolver: Box<dyn PackageResolver> =
-        Box::new(FnPackageResolver(move |p: &str| Ok(format!("{parent}/{p}"))));
+    let resolver: Box<dyn PackageResolver> = Box::new(FnPackageResolver(move |p: &str| {
+        Ok(format!("{parent}/{p}"))
+    }));
     let reader = FsIncludeReader;
     let dir = std::path::Path::new(&entry)
         .parent()
@@ -198,7 +201,10 @@ fn named(xml: &str, tag: &str) -> Vec<String> {
 
 /// Count occurrences of `<TAG ` in the expansion.
 fn tag_count(xml: &str, tag: &str) -> usize {
-    semantic_fields(xml).into_iter().filter(|(t, _)| t == tag).count()
+    semantic_fields(xml)
+        .into_iter()
+        .filter(|(t, _)| t == tag)
+        .count()
 }
 
 #[test]
@@ -244,7 +250,10 @@ fn openarm_matches_canonical_semantically() {
     );
     // Find the first divergence for a focused error.
     for (i, (c, p)) in cf.iter().zip(pf.iter()).enumerate() {
-        assert_eq!(c, p, "OpenArm semantic mismatch at field {i}:\ncanonical: {c:?}\nport:      {p:?}");
+        assert_eq!(
+            c, p,
+            "OpenArm semantic mismatch at field {i}:\ncanonical: {c:?}\nport:      {p:?}"
+        );
     }
 }
 
