@@ -1,0 +1,6 @@
+# Revisions listed here are skipped by git blame (bulk formatting changes).
+# Configure locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# style: apply rustfmt across the crate
+aa9941677300679a10982accc09a0824182991b0
