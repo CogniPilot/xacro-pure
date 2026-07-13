@@ -1,7 +1,7 @@
 //! # xacro-pure: a faithful, pure-Rust port of canonical ROS `xacro`
 //!
 //! Now COMPLETE and the **production engine behind
-//! `hcdformat::expand_xacro`** (feature `xacro`): a plain path dependency, no
+//! `hcdformat::expand_xacro`** (feature `xacro`): consumed from crates.io, no
 //! subprocess fallback, no `xacro-rs`/`pyisheval` fork, no Python anywhere.
 //! It expands both the declarative (SO-ARM) and programmatic (OpenArm) xacro
 //! classes BYTE-IDENTICALLY to `/opt/ros/*/bin/xacro`; the corpus tests in
