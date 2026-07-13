@@ -136,11 +136,17 @@ impl Builder {
                     let v = scalar_to_value(&value, style, tag.as_ref())?;
                     Self::emit(&mut stack, &mut result, v);
                 }
-                Event::SequenceStart(_, _) => stack.push(Frame::Seq(Vec::new())),
-                Event::MappingStart(_, _) => stack.push(Frame::Map {
-                    map: IndexMap::new(),
-                    key: None,
-                }),
+                Event::SequenceStart(_, tag) => {
+                    validate_collection_tag(tag.as_ref(), Collection::Seq)?;
+                    stack.push(Frame::Seq(Vec::new()));
+                }
+                Event::MappingStart(_, tag) => {
+                    validate_collection_tag(tag.as_ref(), Collection::Map)?;
+                    stack.push(Frame::Map {
+                        map: IndexMap::new(),
+                        key: None,
+                    });
+                }
                 Event::SequenceEnd => {
                     let frame = stack.pop().ok_or_else(unbalanced)?;
                     let v = match frame {
@@ -185,6 +191,48 @@ impl Builder {
 /// from the parser the canonical loader would never hit on valid YAML).
 fn unbalanced() -> EvalError {
     EvalError::Runtime("unbalanced YAML container events".to_owned())
+}
+
+/// Which kind of collection a start event opened, so tag validation can require
+/// the matching core-schema tag (`!!seq` for a sequence, `!!map` for a mapping).
+#[derive(Clone, Copy)]
+enum Collection {
+    Seq,
+    Map,
+}
+
+/// Validate the tag on a `SequenceStart`/`MappingStart`. An untagged collection
+/// is fine. PyYAML's SafeLoader accepts the standard core-schema `!!seq` on a
+/// sequence and `!!map` on a mapping (they name the very structure the untagged
+/// node already builds), so we honor exactly those. Every other tag on a
+/// collection has no constructor here, so we raise like SafeLoader instead of
+/// silently dropping the tag: a local `!custom [1, 2]`, a mismatched
+/// `!!seq {a: 1}`, a named/verbatim tag. This mirrors the scalar path, where an
+/// unrecognized tag is an error rather than a stringified value.
+fn validate_collection_tag(
+    tag: Option<&yaml_rust2::parser::Tag>,
+    kind: Collection,
+) -> Result<(), EvalError> {
+    let Some(tag) = tag else {
+        return Ok(());
+    };
+    // Core-schema `!!` tags: yaml-rust2 expands the shorthand to the standard
+    // `tag:yaml.org,2002:` prefix. Accept only the tag naming THIS collection.
+    if tag.handle == "tag:yaml.org,2002:" {
+        let matches = match kind {
+            Collection::Seq => tag.suffix == "seq",
+            Collection::Map => tag.suffix == "map",
+        };
+        if matches {
+            return Ok(());
+        }
+        return Err(unknown_tag_error(&format!(
+            "tag:yaml.org,2002:{}",
+            tag.suffix
+        )));
+    }
+    // A local `!suffix` tag (handle `!`) or any other handle: unrecognized.
+    Err(unknown_tag_error(&format!("{}{}", tag.handle, tag.suffix)))
 }
 
 /// Convert one YAML scalar (its text, style, and optional tag) to an
@@ -266,22 +314,82 @@ fn core_schema_scalar(suffix: &str, text: &str) -> Result<XacroValue, EvalError>
     }
 }
 
-/// Parse a core-schema boolean (`!!bool`): the YAML 1.2 core-schema spellings.
+/// Parse a core-schema boolean (`!!bool`) the way PyYAML's SafeConstructor does.
+/// `construct_yaml_bool` lowercases the scalar and looks it up in a fixed table
+/// (`yes`/`true`/`on` -> true, `no`/`false`/`off` -> false), so an EXPLICIT
+/// `!!bool` accepts ANY casing of those six spellings (`yEs`, `On`, `OFF`, ...);
+/// anything else is not a boolean. (This is broader than the implicit plain-
+/// scalar resolver, which is left untouched.)
 fn parse_core_bool(text: &str) -> Option<bool> {
-    match text {
-        "true" | "True" | "TRUE" => Some(true),
-        "false" | "False" | "FALSE" => Some(false),
+    match text.to_ascii_lowercase().as_str() {
+        "yes" | "true" | "on" => Some(true),
+        "no" | "false" | "off" => Some(false),
         _ => None,
     }
 }
 
-/// Parse a core-schema integer (`!!int`): decimal or `0x` hexadecimal, arbitrary
-/// precision.
+/// Parse a core-schema integer (`!!int`), a direct port of PyYAML's
+/// `SafeConstructor.construct_yaml_int`. After stripping `_` separators and an
+/// optional sign it dispatches by prefix, arbitrary precision throughout:
+///   * `0` -> zero;
+///   * `0b...` -> binary (lowercase `b` only; `0B...` falls through to octal and
+///     fails, matching PyYAML's case-sensitive `startswith('0b')`);
+///   * `0x...` -> hexadecimal (lowercase `x` only, same reason);
+///   * a leading `0` (including `0o`/`0O`) -> octal, so `017`, `0o17`, `0O17` are
+///     15 but `08` errors;
+///   * a `:`-separated value -> sexagesimal (base 60), so `1:30` is 90 and
+///     `190:20:30` is 685230. PyYAML applies this base-60 form and we match it;
+///     note the octal branch is checked FIRST, so `0:30` errors just as it does
+///     in PyYAML;
+///   * otherwise decimal.
 fn parse_core_int(text: &str) -> Option<num_bigint::BigInt> {
-    if let Some(stripped) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        return num_bigint::BigInt::parse_bytes(stripped.as_bytes(), 16);
+    use num_bigint::BigInt;
+    // PyYAML strips underscores from the whole scalar before anything else.
+    let stripped = text.replace('_', "");
+    let bytes = stripped.as_bytes();
+    if bytes.is_empty() {
+        return None;
     }
-    text.parse::<num_bigint::BigInt>().ok()
+    let negative = bytes[0] == b'-';
+    let body: &str = if bytes[0] == b'+' || bytes[0] == b'-' {
+        &stripped[1..]
+    } else {
+        &stripped
+    };
+    if body.is_empty() {
+        return None;
+    }
+    let magnitude: BigInt = if body == "0" {
+        BigInt::from(0)
+    } else if let Some(bin) = body.strip_prefix("0b") {
+        BigInt::parse_bytes(bin.as_bytes(), 2)?
+    } else if let Some(hex) = body.strip_prefix("0x") {
+        BigInt::parse_bytes(hex.as_bytes(), 16)?
+    } else if body.starts_with('0') {
+        // Leading-zero octal. Python's `int(value, 8)` also accepts a `0o`/`0O`
+        // prefix, so strip that when present; otherwise the leading zeros parse
+        // fine in base 8. A digit outside 0-7 (`08`) yields None, i.e. an error.
+        let digits = body
+            .strip_prefix("0o")
+            .or_else(|| body.strip_prefix("0O"))
+            .unwrap_or(body);
+        BigInt::parse_bytes(digits.as_bytes(), 8)?
+    } else if body.contains(':') {
+        // Sexagesimal: parse each `:`-separated part in base 10, most significant
+        // first, accumulating with base 60 (PyYAML reverses the parts and walks
+        // powers of 60). Any empty or non-decimal part yields None (an error).
+        let mut acc = BigInt::from(0);
+        let mut place = BigInt::from(1);
+        for part in body.rsplit(':') {
+            let digit = part.parse::<BigInt>().ok()?;
+            acc += &digit * &place;
+            place *= 60;
+        }
+        acc
+    } else {
+        BigInt::parse_bytes(body.as_bytes(), 10)?
+    };
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 /// Parse a core-schema float (`!!float`). An EXPLICIT `!!float` tag is more
@@ -507,6 +615,123 @@ mod tests {
         match d["x"] {
             XacroValue::Float(f) => assert!((f - std::f64::consts::FRAC_PI_2).abs() < 1e-12),
             ref other => panic!("x not float: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_collection_tag_errors() {
+        // An unknown local tag on a collection errors like SafeLoader instead of
+        // silently passing the un-tagged structure (`!custom [1, 2]`).
+        let err = load_yaml_str("x: !custom [1, 2]\n").unwrap_err();
+        assert!(
+            format!("{err}").contains("constructor for the tag '!custom'"),
+            "expected an unknown-tag error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn core_schema_seq_and_map_tags_accepted() {
+        // SafeLoader accepts `!!seq` on a sequence and `!!map` on a mapping; they
+        // build the same structure the untagged node would.
+        let v = load_yaml_str("s: !!seq [1, 2]\nm: !!map {a: 1}\n").unwrap();
+        let d = match v {
+            XacroValue::Dict(d) => d,
+            other => panic!("expected dict, got {other:?}"),
+        };
+        assert_eq!(
+            d["s"],
+            XacroValue::List(vec![XacroValue::int(1), XacroValue::int(2)])
+        );
+        let m = match &d["m"] {
+            XacroValue::Dict(m) => m,
+            other => panic!("m not a dict: {other:?}"),
+        };
+        assert_eq!(m["a"], XacroValue::int(1));
+    }
+
+    #[test]
+    fn mismatched_collection_tag_errors() {
+        // `!!seq` on a mapping node is a type mismatch; SafeLoader raises and so
+        // do we (rather than silently building a dict).
+        let err = load_yaml_str("x: !!seq {a: 1}\n").unwrap_err();
+        assert!(
+            format!("{err}").contains("constructor for the tag 'tag:yaml.org,2002:seq'"),
+            "expected a mismatched-tag error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn core_bool_tag_extra_spellings() {
+        // An explicit `!!bool` accepts PyYAML's full yes/no/on/off set in any
+        // casing (the constructor lowercases and table-looks-up).
+        for (text, want) in [
+            ("yes", true),
+            ("Yes", true),
+            ("YES", true),
+            ("yEs", true),
+            ("on", true),
+            ("On", true),
+            ("no", false),
+            ("off", false),
+            ("OFF", false),
+        ] {
+            let src = format!("x: !!bool {text}\n");
+            let v = load_yaml_str(&src).unwrap();
+            let d = match v {
+                XacroValue::Dict(d) => d,
+                other => panic!("expected dict, got {other:?}"),
+            };
+            assert_eq!(d["x"], XacroValue::Bool(want), "!!bool {text}");
+        }
+    }
+
+    #[test]
+    fn core_bool_tag_rejects_non_bool() {
+        // Spellings PyYAML's bool constructor does NOT accept error under an
+        // explicit tag (`y`/`n` are resolver-only, never constructor keys).
+        for text in ["y", "n", "tru", "1"] {
+            let src = format!("x: !!bool {text}\n");
+            assert!(
+                load_yaml_str(&src).is_err(),
+                "!!bool {text} should error"
+            );
+        }
+    }
+
+    #[test]
+    fn core_int_tag_extra_radixes() {
+        // Forms PyYAML's int constructor accepts beyond plain decimal/hex.
+        for (text, want) in [
+            ("0b101", 5_i64),
+            ("0o17", 15),
+            ("0O17", 15),
+            ("017", 15),
+            ("0777", 511),
+            ("1_000", 1000),
+            ("0x1f", 31),
+            ("1:30", 90),
+            ("190:20:30", 685230),
+            ("-0b101", -5),
+            ("+017", 15),
+        ] {
+            let src = format!("x: !!int {text}\n");
+            let v = load_yaml_str(&src).unwrap();
+            let d = match v {
+                XacroValue::Dict(d) => d,
+                other => panic!("expected dict, got {other:?}"),
+            };
+            assert_eq!(d["x"], XacroValue::int(want), "!!int {text}");
+        }
+    }
+
+    #[test]
+    fn core_int_tag_rejects_bad_forms() {
+        // Forms PyYAML's int constructor rejects (uppercase radix prefixes route
+        // through the octal branch and fail; `08` is not octal; `0:30` hits the
+        // octal branch before sexagesimal; a float is not an int).
+        for text in ["0B101", "0X1F", "08", "0:30", "0xg", "1.5", "abc"] {
+            let src = format!("x: !!int {text}\n");
+            assert!(load_yaml_str(&src).is_err(), "!!int {text} should error");
         }
     }
 }
