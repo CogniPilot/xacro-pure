@@ -35,7 +35,7 @@
 //!     string is one, matching `arg_str.startswith('$(eval ')`.
 //!   * `_eval` rejects any `__` for safety, mirroring the canonical guard.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::EvalError;
 use crate::namespace::Namespace;
@@ -355,12 +355,17 @@ fn abs_dirname(filename: &str) -> String {
 /// We rebuild that namespace for `safe_eval`: the args table is injected as bare
 /// auto-typed PROPERTIES (so `$(eval count + 10)` resolves), and the `_eval_dict`
 /// callables (`arg`/`dirname`/`env`/`optenv`/`find`) as functions. Because
-/// `_DictWrapper` checks functions BEFORE args, a function must WIN a name
-/// collision with an arg: we drop any arg whose name matches a function name
-/// before injecting it as a property, so the function binding stands.
-/// `math.*` is supplied by `safe_eval` itself (it injects the math namespace).
-/// `True`/`False` are Python keyword constants; we add `true`/`false` as bare
-/// aliases.
+/// `_DictWrapper` checks the functions dict BEFORE args, everything in that dict
+/// must WIN a name collision with an arg. Canonical's functions dict is not just
+/// the callables: it also carries the `true`/`false` bool aliases and the whole
+/// `math.*` namespace. So the exclusion is the FULL eval namespace, an arg whose
+/// name lands anywhere in it (`arg`/`find`/..., `true`/`false`, or a math symbol
+/// like `pi`/`sin`/`math`) is NOT injected as a property, leaving the canonical
+/// binding to stand. The math names are enumerated from the SAME injector
+/// `safe_eval` uses ([`crate::eval::injected_math_names`]) so the guard cannot
+/// drift from what is actually in scope. `True`/`False` are Python keyword
+/// constants (never name-resolved, so unshadowable regardless); `true`/`false`
+/// are added as bare aliases and the guard protects them.
 fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, SubstError> {
     if expr.contains("__") {
         return Err(SubstError::Subst(
@@ -462,18 +467,24 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
         }
     });
 
-    // (b) properties: True/False/true/false as bare names, then EVERY arg as a
-    // bare auto-typed name (the _DictWrapper args fallback). Injected as
-    // properties so safe_eval binds them in the eval scope.
+    // The full eval namespace an arg must NOT shadow (canonical `_DictWrapper`
+    // checks this whole set before falling back to the args table): the callables,
+    // the bool constants, and every math symbol safe_eval injects. The math names
+    // come from the same injector safe_eval uses, so this cannot drift.
+    let mut excluded: HashSet<String> =
+        EVAL_FUNCTION_NAMES.iter().map(|s| (*s).to_owned()).collect();
+    excluded.extend(EVAL_BOOL_CONSTANTS.iter().map(|(name, _)| (*name).to_owned()));
+    excluded.extend(crate::eval::injected_math_names());
+
+    // (b) properties: the bool constants as bare names, then EVERY arg whose name
+    // does not collide with the eval namespace, as a bare auto-typed name (the
+    // _DictWrapper args fallback). Injected as properties so safe_eval binds them.
     let mut props = Namespace::new();
-    props.set("True", XacroValue::Bool(true));
-    props.set("False", XacroValue::Bool(false));
-    props.set("true", XacroValue::Bool(true));
-    props.set("false", XacroValue::Bool(false));
+    for (name, value) in EVAL_BOOL_CONSTANTS {
+        props.set((*name).to_owned(), XacroValue::Bool(*value));
+    }
     for (name, raw) in &args_snapshot {
-        // A function of the same name must WIN (canonical checks functions first),
-        // so an arg colliding with a function name is NOT injected as a property.
-        if EVAL_FUNCTION_NAMES.contains(&name.as_str()) {
+        if excluded.contains(name.as_str()) {
             continue;
         }
         props.set(name.clone(), convert_value_auto(raw));
@@ -485,10 +496,19 @@ fn eval_substitution(expr: &str, ctx: &mut SubstContext) -> Result<String, Subst
     Ok(value.to_python_str())
 }
 
-/// The `_eval_dict` callable names exposed inside `$(eval ...)`. An arg colliding
-/// with one of these is dropped from the property injection so the function wins
-/// the binding (canonical `_DictWrapper` checks functions before args).
+/// The `_eval_dict` callable names exposed inside `$(eval ...)`. Part of the eval
+/// namespace an arg may not shadow: an arg colliding with one of these is dropped
+/// from the property injection so the callable wins the binding (canonical
+/// `_DictWrapper` checks the functions dict before args).
 const EVAL_FUNCTION_NAMES: &[&str] = &["arg", "dirname", "env", "optenv", "find"];
+
+/// The bool constants exposed as bare names inside `$(eval ...)`, the single
+/// source for BOTH their property injection and their place in the collision
+/// guard. `True`/`False` mirror Python's keyword constants; `true`/`false` are
+/// xacro's lowercase aliases (the ones that are actually name-resolved, so the
+/// guard protects them from an arg of the same name).
+const EVAL_BOOL_CONSTANTS: &[(&str, bool)] =
+    &[("True", true), ("False", false), ("true", true), ("false", false)];
 
 /// Canonical `convert_value(value, 'auto')`: numeric if it parses (float if it
 /// has a `.`, else int), bool for `true`/`false` (case-insensitive), else the
@@ -714,6 +734,43 @@ mod tests {
             resolve_args("$(eval find('collision_pkg'))", &mut ctx).unwrap(),
             "/share/collision_pkg"
         );
+    }
+
+    #[test]
+    fn eval_arg_named_pi_does_not_shadow_math_pi() {
+        // An arg named `pi` must not shadow the injected math constant: canonical's
+        // functions dict (which carries math.*) is checked before the args table.
+        let mut ctx = fake_ctx();
+        ctx.args.insert("pi".to_owned(), "999".to_owned());
+        let out = resolve_args("$(eval pi)", &mut ctx).unwrap();
+        let got: f64 = out.parse().expect("math.pi should render as a float");
+        assert!(
+            (got - std::f64::consts::PI).abs() < 1e-9,
+            "expected math.pi, got {out}"
+        );
+    }
+
+    #[test]
+    fn eval_arg_named_bool_alias_does_not_shadow_constant() {
+        // An arg named `true` must not shadow the bool constant (a resolvable bare
+        // name in the eval namespace). Without the guard the arg would overwrite it
+        // and the result would be the arg's auto-typed value instead of `True`.
+        let mut ctx = fake_ctx();
+        ctx.args.insert("true".to_owned(), "0".to_owned());
+        assert_eq!(resolve_args("$(eval true)", &mut ctx).unwrap(), "True");
+        // `True` is a Python keyword constant, so it is never name-resolved and an
+        // arg of that name cannot shadow it either.
+        ctx.args.insert("True".to_owned(), "0".to_owned());
+        assert_eq!(resolve_args("$(eval True)", &mut ctx).unwrap(), "True");
+    }
+
+    #[test]
+    fn eval_non_colliding_arg_still_resolves() {
+        // An arg whose name is NOT in the eval namespace resolves as its bare
+        // auto-typed value, unaffected by the widened guard.
+        let mut ctx = fake_ctx();
+        ctx.args.insert("count".to_owned(), "3".to_owned());
+        assert_eq!(resolve_args("$(eval count + 10)", &mut ctx).unwrap(), "13");
     }
 
     #[test]

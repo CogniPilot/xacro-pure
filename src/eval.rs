@@ -129,6 +129,15 @@ pub fn safe_eval_deferred_with_args(
     with_vm(|vm| eval_in_vm(vm, expr, props, Some(functions), deferred_errors, args))
 }
 
+/// The math namespace names `safe_eval` injects into every eval scope (bare
+/// `pi`/`sin`/... plus the `math` object). Enumerated by driving the SAME
+/// [`crate::math_builtins::install_math`] the evaluator uses, so the list can
+/// never drift from what is actually injected. The `$(eval ...)` collision guard
+/// uses this to stop an arg named e.g. `pi` from shadowing `math.pi`.
+pub fn injected_math_names() -> Vec<String> {
+    with_vm(crate::math_builtins::math_symbol_names)
+}
+
 /// Compile `expr` in eval mode and return the global names it references (its
 /// `co_names`, minus dunder names which are rejected anyway). This is the seam
 /// the property model uses: canonical xacro passes the live `Table` as

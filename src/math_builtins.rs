@@ -269,6 +269,18 @@ where
     set("math", math_mod.into());
 }
 
+/// The names [`install_math`] injects into an eval scope: every bare `math`
+/// symbol (`pi`, `sin`, `radians`, ...) plus the `math` namespace object. This
+/// drives the SAME `install_math` used to populate the scope with a name-only
+/// sink, so the enumerated set can never drift from what is actually injected.
+/// Used by the `$(eval ...)` collision guard to keep an arg from shadowing a
+/// math symbol.
+pub fn math_symbol_names(vm: &VirtualMachine) -> Vec<String> {
+    let mut names = Vec::new();
+    install_math(vm, |name, _obj| names.push(name.to_owned()));
+    names
+}
+
 /// Euclid's GCD on non-negative `i64`s.
 fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
     while b != 0 {
