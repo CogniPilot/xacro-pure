@@ -51,6 +51,26 @@ For WebAssembly or any environment where the library must not touch the filesyst
 use `process_document_with` and supply an `IncludeReader` plus a `PackageResolver`;
 every file access flows through your callbacks.
 
+## `load_yaml` and PyYAML's SafeLoader
+
+Canonical xacro loads YAML with PyYAML's `safe_load`. `load_yaml` matches it for
+every construct that appears in robot description YAML: scalars, mappings, sequences,
+the `!!str` / `!!int` / `!!float` / `!!bool` / `!!null` / `!!seq` / `!!map` core-schema
+tags, and xacro's own `!radians` / `!degrees` / ... unit constructors. Five standard
+tags that SafeLoader constructs are deliberately unsupported, and one implicit type
+resolves differently:
+
+- `!!set`, `!!omap`, `!!pairs`, `!!binary`, `!!timestamp` are rejected with an error
+  naming the construct. There is no value type for a set, ordered map, pair list,
+  byte string, or timestamp; none appear in robot YAML; and byte-identical `str()`
+  output for a set is impossible in principle (Python set iteration order is
+  hash-randomized per process). A clear rejection beats accepting a substitute type.
+- YAML aliases (`*anchor`) are rejected: a `load_yaml` document is a plain value tree.
+- A plain (untagged, unquoted) timestamp such as `2026-07-12` stays a string, where
+  PyYAML resolves it to a `date` / `datetime`. Under `str()` interpolation the result
+  is textually identical; the two differ only if an expression uses the value in a
+  type-dependent way. An explicit `!!timestamp` tag is rejected as above.
+
 ## License
 
 Apache-2.0. Copyright 2026 CogniPilot Foundation.

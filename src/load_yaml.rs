@@ -24,6 +24,33 @@
 //! wrapper classes (faithful `YamlDictWrapper`/`YamlListWrapper` ports defined
 //! once per VM), so `cfg.geometry.scale.x` chains resolve exactly as canonical;
 //! the OpenArm corpus test drives this end-to-end.
+//!
+//! ## Divergences from PyYAML's SafeLoader
+//! Canonical xacro loads YAML through PyYAML's `safe_load`. This loader matches
+//! it for every construct that appears in robot YAML (scalars, mappings,
+//! sequences, the `!!str`/`!!int`/`!!float`/`!!bool`/`!!null`/`!!seq`/`!!map`
+//! core-schema tags, plus xacro's own unit constructors). Five standard tags that
+//! SafeLoader constructs are DELIBERATELY not supported, and one implicit type is
+//! resolved differently. The set is small, closed, and intentional:
+//!   * `!!set`, `!!omap`, `!!pairs`, `!!binary`, `!!timestamp` are REJECTED with a
+//!     message naming the construct. There is no [`XacroValue`] variant for a set,
+//!     ordered map, pair list, byte string, or timestamp; none of these tags
+//!     appear in robot description YAML; and byte-identical `str()` output for a
+//!     set is unattainable in principle (CPython set iteration order is hash-
+//!     randomized per process). Accepting them with a substitute type would be
+//!     worse than a clear rejection, so we reject and name the tag.
+//!   * YAML aliases (`*anchor`) are rejected: a load_yaml document is expected to
+//!     be a plain value tree, and resolving shared references would change
+//!     identity semantics downstream.
+//!   * A PLAIN (untagged, unquoted) timestamp such as `2026-07-12` or
+//!     `2026-07-12 10:00:00` stays a [`XacroValue::Str`]; PyYAML implicitly
+//!     resolves it to a `date`/`datetime`. Under `str()` interpolation (how these
+//!     values almost always reach the output) the result is textually identical;
+//!     the two diverge only if an expression uses the value in a type-dependent
+//!     way (date arithmetic, attribute access). An EXPLICIT `!!timestamp` tag is
+//!     rejected as above rather than silently kept as a string.
+//!
+//! Each of these is pinned by a test asserting the exact behavior.
 
 use indexmap::IndexMap;
 use yaml_rust2::parser::{Event, Parser};
@@ -226,10 +253,10 @@ fn validate_collection_tag(
         if matches {
             return Ok(());
         }
-        return Err(unknown_tag_error(&format!(
-            "tag:yaml.org,2002:{}",
-            tag.suffix
-        )));
+        // A non-matching core-schema tag (`!!set` on a map, `!!omap`/`!!pairs` on
+        // a seq, a mismatched `!!seq {..}`): route through the shared builder so
+        // the deliberately-unsupported standard tags name their construct.
+        return Err(core_schema_tag_error(&tag.suffix));
     }
     // A local `!suffix` tag (handle `!`) or any other handle: unrecognized.
     Err(unknown_tag_error(&format!("{}{}", tag.handle, tag.suffix)))
@@ -291,6 +318,36 @@ fn unknown_tag_error(tag: &str) -> EvalError {
     EvalError::Runtime(format!("could not determine a constructor for the tag '{tag}'"))
 }
 
+/// The standard `tag:yaml.org,2002:` tags that PyYAML's SafeLoader constructs but
+/// this loader deliberately does NOT support, paired with a short description of
+/// the construct. There is no [`XacroValue`] variant for any of them and none
+/// appear in robot description YAML, so rejecting is correct; naming the construct
+/// makes the rejection an explicit, recognizable divergence rather than looking
+/// like a mistyped unknown tag. `!!set` arrives as a mapping node, `!!omap` and
+/// `!!pairs` as sequence nodes, `!!binary` and `!!timestamp` as scalar nodes.
+const UNSUPPORTED_STANDARD_TAGS: &[(&str, &str)] = &[
+    ("set", "an unordered set"),
+    ("omap", "an ordered mapping"),
+    ("pairs", "a list of pairs"),
+    ("binary", "base64-encoded bytes"),
+    ("timestamp", "a date or timestamp"),
+];
+
+/// Build the error for a core-schema `tag:yaml.org,2002:<suffix>` tag this loader
+/// does not construct. The five standard SafeLoader tags xacro-pure deliberately
+/// omits ([`UNSUPPORTED_STANDARD_TAGS`]) get a message that NAMES the construct;
+/// every other unconstructable core-schema tag keeps the generic unknown-tag
+/// phrasing.
+fn core_schema_tag_error(suffix: &str) -> EvalError {
+    if let Some(&(_, desc)) = UNSUPPORTED_STANDARD_TAGS.iter().find(|(s, _)| *s == suffix) {
+        return EvalError::Runtime(format!(
+            "!!{suffix} ({desc}) is a standard YAML tag that PyYAML's SafeLoader \
+             constructs but load_yaml does not support"
+        ));
+    }
+    unknown_tag_error(&format!("tag:yaml.org,2002:{suffix}"))
+}
+
 /// Construct a scalar explicitly typed by a core-schema `!!` tag, matching
 /// PyYAML's SafeLoader constructors. The tag FORCES the type: `!!str 5` is the
 /// string "5", `!!int 5` is the integer 5. A value that cannot be constructed for
@@ -310,7 +367,10 @@ fn core_schema_scalar(suffix: &str, text: &str) -> Result<XacroValue, EvalError>
         "float" => parse_core_float(text)
             .map(XacroValue::Float)
             .ok_or_else(|| EvalError::Runtime(format!("!!float value is not a float: {text}"))),
-        other => Err(unknown_tag_error(&format!("tag:yaml.org,2002:{other}"))),
+        // Scalar core-schema tags with no scalar constructor here: `!!binary` and
+        // `!!timestamp` name their construct; anything else keeps the generic
+        // unknown-tag phrasing.
+        other => Err(core_schema_tag_error(other)),
     }
 }
 
@@ -733,5 +793,68 @@ mod tests {
             let src = format!("x: !!int {text}\n");
             assert!(load_yaml_str(&src).is_err(), "!!int {text} should error");
         }
+    }
+
+    #[test]
+    fn unsupported_standard_tags_name_the_construct() {
+        // The five standard tags PyYAML's SafeLoader constructs but xacro-pure
+        // deliberately rejects each error with a message NAMING the construct, not
+        // the generic unknown-tag phrasing. `!!set` is a mapping node, `!!omap`/
+        // `!!pairs` sequence nodes, `!!binary`/`!!timestamp` scalar nodes, so this
+        // exercises both the collection and scalar rejection paths.
+        for (src, needle) in [
+            ("x: !!set {a: 1, b: 2}\n", "!!set (an unordered set)"),
+            ("x: !!omap [{a: 1}]\n", "!!omap (an ordered mapping)"),
+            ("x: !!pairs [{a: 1}]\n", "!!pairs (a list of pairs)"),
+            ("x: !!binary \"aGk=\"\n", "!!binary (base64-encoded bytes)"),
+            (
+                "x: !!timestamp 2026-07-12\n",
+                "!!timestamp (a date or timestamp)",
+            ),
+        ] {
+            let err = load_yaml_str(src).unwrap_err();
+            let text = format!("{err}");
+            assert!(
+                text.contains(needle),
+                "expected `{needle}` in error for {src:?}, got: {text}"
+            );
+            assert!(
+                text.contains("load_yaml does not support"),
+                "expected the unsupported-standard phrasing for {src:?}, got: {text}"
+            );
+            // The generic unknown-tag phrasing must NOT be used for these; a typo'd
+            // tag reads differently from a recognized-but-unsupported one.
+            assert!(
+                !text.contains("could not determine a constructor"),
+                "standard tag {src:?} must not use the generic phrasing: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn plain_timestamp_scalar_stays_string() {
+        // A PLAIN (untagged, unquoted) timestamp resolves to a string here, where
+        // PyYAML would build a date/datetime. Textually identical under str()
+        // interpolation; this pins the deliberate divergence.
+        for text in ["2026-07-12", "2026-07-12 10:00:00"] {
+            let src = format!("x: {text}\n");
+            let v = load_yaml_str(&src).unwrap();
+            let d = match v {
+                XacroValue::Dict(d) => d,
+                other => panic!("expected dict, got {other:?}"),
+            };
+            assert_eq!(d["x"], XacroValue::Str(text.to_owned()), "plain {text}");
+        }
+    }
+
+    #[test]
+    fn yaml_aliases_rejected() {
+        // load_yaml expects a plain value tree; a `*anchor` alias is rejected
+        // rather than resolved, another deliberate SafeLoader divergence.
+        let err = load_yaml_str("a: &x 1\nb: *x\n").unwrap_err();
+        assert!(
+            format!("{err}").contains("aliases are not supported"),
+            "expected an alias rejection, got: {err}"
+        );
     }
 }
